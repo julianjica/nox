@@ -38,9 +38,29 @@ if arguments == ["--help"] || arguments == ["-h"] {
     usage: nox [file.pdf] [--page N] [--forward LINE TEXFILE]
       --page N               open at page N
       --forward LINE TEX     SyncTeX: show where LINE of TEX ends up in the PDF
+    nox --export file.pdf [--write]
+                             highlights and notes as Markdown (--write: into file.notes.md)
     In the viewer, press ? (or Cmd-/) for this list:
 
     """ + Keymap.plainText)
+    exit(0)
+}
+
+// `nox --export file.pdf [--write]`: the PDF's highlights and notes as Markdown
+// (printed, or written into file.notes.md with --write). No window needed.
+if arguments.first == "--export", arguments.count >= 2 {
+    let pdf = URL(fileURLWithPath: absolutePaths([arguments[1]])[0])
+    guard let document = PDFDocument(url: pdf) else {
+        FileHandle.standardError.write(Data("nox: cannot open \(pdf.path)\n".utf8)); exit(1)
+    }
+    if arguments.contains("--write") {
+        do {
+            let count = try NotesExport.write(document, pdf: pdf)
+            print("\(count) highlights/notes → \(NotesExport.notesURL(for: pdf).path)")
+        } catch { FileHandle.standardError.write(Data("nox: \(error.localizedDescription)\n".utf8)); exit(1) }
+    } else {
+        print(NotesExport.markdown(document, pdf: pdf).text, terminator: "")
+    }
     exit(0)
 }
 

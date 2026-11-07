@@ -36,6 +36,8 @@ enum Keymap {
             ("e", "edit the note you last clicked"),
             ("dh", "delete the highlight / note you last clicked"),
             ("gn", "list all highlights and notes (↩ go, e edit, d delete)"),
+            ("u / Ctrl-r", "undo / redo the last highlight or note change"),
+            (",e", "export highlights and notes into <file>.notes.md"),
             ("click / right-click", "a highlight: its note and actions / menu"),
         ]),
         ("View", [
@@ -71,7 +73,7 @@ enum Keymap {
         "d": "dh delete the highlight / note you last clicked",
         "m": "m + a letter: set a mark",
         "'": "' + a letter: jump to a mark",
-        ",": ",c colors   ,f full screen   ,q quote to notes file   ,n open notes file",
+        ",": ",c dark mode   ,f full screen   ,q quote to notes file   ,n open notes file   ,e export highlights/notes",
     ]
 
     static var plainText: String {

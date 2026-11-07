@@ -49,6 +49,7 @@ nox registers as an *alternate* PDF app; it never makes itself the default. To m
 nox paper.pdf                         # open (or focus, if already open)
 nox paper.pdf --page 12               # open at page 12
 nox main.pdf --forward 120 main.tex   # SyncTeX: show where line 120 of main.tex ended up
+nox --export paper.pdf [--write]      # highlights and notes as Markdown (--write: into paper.notes.md)
 nox --help                            # all options and keys
 ```
 
@@ -87,6 +88,8 @@ Highlights and notes (saved in the PDF)
   e                      edit the note you last clicked
   dh                     delete the highlight / note you last clicked
   gn                     list all highlights and notes (↩ go, e edit, d delete)
+  u / Ctrl-r             undo / redo the last highlight or note change
+  ,e                     export highlights and notes into <file>.notes.md
   click / right-click    a highlight: its note and actions / menu
 
 View
@@ -121,6 +124,16 @@ Files
   so the recolored display never reaches the file. The result is cleaned with `qpdf` when available and replaces
   the original only once fully written. If the file changed on disk in the meantime, nox refuses to save and asks
   you to reload.
+
+## Exporting highlights and notes
+
+`,e` (or `nox --export paper.pdf --write`) collects every highlight and note in the PDF, in reading order, into
+`paper.notes.md` next to it: each highlight as a quote with a link to its page, followed by its note. The export
+lives between two marker comments and is replaced on every export; anything you write elsewhere in the file is kept.
+Without `--write`, the Markdown is printed instead.
+
+Every change to highlights and notes can be undone with `u` and redone with `Ctrl-r`; each step is saved to the file
+immediately.
 
 ## Colors
 

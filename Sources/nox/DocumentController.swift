@@ -250,8 +250,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private func remove(_ annotation: PDFAnnotation, from page: PDFPage) {
         let sticky = annotation.type == "Text"
-        page.removeAnnotation(annotation)
-        markDirty(page)
+        change(.remove(annotation, page))
         if lastClick?.page === page { lastClick = nil }
         popoverTarget = nil
         save(saying: sticky ? "note deleted" : "highlight deleted")
@@ -307,9 +306,8 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     @objc private func menuColor(_ sender: NSMenuItem) {
         guard let target = menuTarget, let letter = (sender.representedObject as? String)?.first,
               let color = Theme.highlightColors[letter] else { return }
-        target.annotation.color = color
+        change(.color(target.annotation, target.page, old: target.annotation.color, new: color))
         lastColor = letter
-        markDirty(target.page)
         save(saying: "color changed")
     }
 
@@ -372,7 +370,14 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// Runs a typed key sequence, e.g. "12G" or "ha" (also used by `nox --keys`).
     func type(_ keys: String) {
         if let presentation { keys.forEach { presentation.type(String($0)) }; return }
-        for key in keys { _ = handle(key: String(key)) }
+        for key in keys {
+            // Control characters (e.g. $'\x12' for Ctrl-r) go to the Ctrl-key handler.
+            if let value = key.unicodeScalars.first?.value, value >= 1, value <= 26, value != 13 {
+                _ = handleControl(String(UnicodeScalar(value + 96)!))
+            } else {
+                _ = handle(key: String(key))
+            }
+        }
     }
 
     private func handle(key: String) -> Bool {
@@ -421,6 +426,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "N": stepSearch(by: -times)
         case "y": yank()
         case "r": reload(force: true)
+        case "u": undo()
         case "o": (NSApp.delegate as? AppDelegate)?.openPanel()
         case "q": window.performClose(nil)
         case "?": showHelp()
@@ -437,6 +443,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case ",c": toggleColors()
         case ",q": quoteSelection()
         case ",n": Notes.open(pdf: path); message("opening notes")
+        case ",e": exportNotes()
         case ",f": window.toggleFullScreen(nil)
         default:
             if sequence.count == 2, let mode = sequence.first, let letter = sequence.last {
@@ -457,6 +464,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         switch key {
         case "d": scroll(by: visibleHeight / 2)
         case "u": scroll(by: -visibleHeight / 2)
+        case "r": redo()
         case "f": scroll(by: visibleHeight * 0.9)
         case "b": scroll(by: -visibleHeight * 0.9)
         case "o": if pdfView.canGoBack { pdfView.goBack(nil) }
@@ -650,8 +658,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             }
             if first == nil, let note, !note.isEmpty { annotation.contents = note }
             first = first ?? annotation
-            page.addAnnotation(annotation)
-            markDirty(page)
+            change(.add(annotation, page))
         }
         return first
     }
@@ -687,8 +694,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             annotation.color = Theme.highlightColors["a"]!
             annotation.userName = "nox"
             annotation.contents = note
-            page.addAnnotation(annotation)
-            self.markDirty(page)
+            self.change(.add(annotation, page))
             self.save(saying: "note saved in the PDF")
         }
         if let given { apply(given) } else {
@@ -740,40 +746,33 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         openEditor(heading: heading, quote: quote, text: annotation.contents ?? "") { [weak self] result in
             guard let self, let result else { return }
             let note = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.markDirty(page)
             if note.isEmpty && annotation.type == "Text" {
-                page.removeAnnotation(annotation)
+                self.change(.remove(annotation, page))
                 self.save(saying: "note deleted")
                 return
             }
-            annotation.contents = note.isEmpty ? nil : note
+            self.change(.contents(annotation, page, old: annotation.contents, new: note.isEmpty ? nil : note))
             self.save(saying: note.isEmpty ? "note removed (highlight kept)" : "note saved in the PDF")
         }
     }
 
-    /// The text under a highlight.
     private func quoteText(of annotation: PDFAnnotation, on page: PDFPage) -> String {
-        NoxPage.highlightRects(annotation)
-            .compactMap { page.selection(for: $0.insetBy(dx: 0, dy: $0.height * 0.2))?.string }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        NotesExport.quote(of: annotation, on: page)
     }
 
-    /// Every highlight and sticky note, in reading order.
     func noteEntries() -> [NoteEntry] {
-        guard let doc = document else { return [] }
-        var result: [NoteEntry] = []
-        for index in 0..<doc.pageCount {
-            guard let page = doc.page(at: index) else { continue }
-            let found = page.annotations.filter { $0.type == "Highlight" || $0.type == "Text" }
-                .sorted { $0.bounds.maxY > $1.bounds.maxY }
-            for annotation in found {
-                let quote = annotation.type == "Highlight" ? quoteText(of: annotation, on: page) : ""
-                result.append(NoteEntry(annotation: annotation, page: page, pageIndex: index, quote: quote))
-            }
+        document.map { NotesExport.entries(in: $0) } ?? []
+    }
+
+    /// `,e`: write the PDF's highlights and notes into <name>.notes.md.
+    func exportNotes() {
+        guard let doc = document else { return }
+        do {
+            let count = try NotesExport.write(doc, pdf: url)
+            message("exported \(count) highlight\(count == 1 ? "" : "s")/notes to \(NotesExport.notesURL(for: url).lastPathComponent)")
+        } catch {
+            message("could not export: \(error.localizedDescription)", error: true)
         }
-        return result
     }
 
     /// `gn`: list of highlights and notes; Return jumps, e edits, d deletes.
@@ -792,8 +791,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         }
         list.onDelete = { [weak self, weak list] entry in
             guard let self else { return }
-            entry.page.removeAnnotation(entry.annotation)
-            self.markDirty(entry.page)
+            self.change(.remove(entry.annotation, entry.page))
             self.save(saying: "deleted")
             list?.update(self.noteEntries())
         }
@@ -825,7 +823,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                 guard area.minX.isFinite, area.minY.isFinite else { continue }
                 for annotation in page.annotations where annotation.type == "Highlight"
                     && NoxPage.highlightRects(annotation).contains(where: { $0.intersects(area) }) {
-                    page.removeAnnotation(annotation); removed += 1; markDirty(page)
+                    change(.remove(annotation, page)); removed += 1
                 }
             }
         }
@@ -860,7 +858,67 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return fresh.dataRepresentation()
     }
 
-    private func save(saying text: String) {
+    // MARK: - Undo
+
+    /// One change to the PDF's annotations; undo applies it backwards.
+    enum Edit {
+        case add(PDFAnnotation, PDFPage)
+        case remove(PDFAnnotation, PDFPage)
+        case contents(PDFAnnotation, PDFPage, old: String?, new: String?)
+        case color(PDFAnnotation, PDFPage, old: NSColor, new: NSColor)
+    }
+    private var pendingEdits: [Edit] = []
+    private var undoStack: [(label: String, edits: [Edit])] = []
+    private var redoStack: [(label: String, edits: [Edit])] = []
+
+    /// Applies a change and records it; the next save() closes it as one undo step.
+    private func change(_ edit: Edit) {
+        apply(edit, backwards: false)
+        pendingEdits.append(edit)
+    }
+
+    private func apply(_ edit: Edit, backwards: Bool) {
+        switch edit {
+        case let .add(annotation, page):
+            if backwards { page.removeAnnotation(annotation) } else { page.addAnnotation(annotation) }
+            markDirty(page)
+        case let .remove(annotation, page):
+            if backwards { page.addAnnotation(annotation) } else { page.removeAnnotation(annotation) }
+            markDirty(page)
+        case let .contents(annotation, page, old, new):
+            annotation.contents = backwards ? old : new
+            markDirty(page)
+        case let .color(annotation, page, old, new):
+            annotation.color = backwards ? old : new
+            markDirty(page)
+        }
+    }
+
+    /// `u`: undo the last change to highlights and notes (saved to the file right away).
+    func undo() {
+        guard let step = undoStack.popLast() else { message("nothing to undo"); return }
+        popover?.close()
+        step.edits.reversed().forEach { apply($0, backwards: true) }
+        redoStack.append(step)
+        save(saying: "undone: \(step.label)", recording: false)
+    }
+
+    /// `Ctrl-r`: redo.
+    func redo() {
+        guard let step = redoStack.popLast() else { message("nothing to redo"); return }
+        popover?.close()
+        step.edits.forEach { apply($0, backwards: false) }
+        undoStack.append(step)
+        save(saying: "redone: \(step.label)", recording: false)
+    }
+
+    private func save(saying text: String, recording: Bool = true) {
+        if recording, !pendingEdits.isEmpty {
+            undoStack.append((text, pendingEdits))
+            if undoStack.count > 200 { undoStack.removeFirst() }
+            redoStack = []
+        }
+        pendingEdits = []
         // Pages are drawn (and cached) with their highlights baked in; redraw the changed ones.
         refreshNotes()
         guard stamp() == fileStamp else {
@@ -1408,6 +1466,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         pageTexts = [:]
         pageLines = [:]
         clearHints(); visual = nil
+        undoStack = []; redoStack = []; pendingEdits = []
         message("reloaded")
         updateStatus()
     }
