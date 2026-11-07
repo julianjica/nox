@@ -17,7 +17,8 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     private var count = ""        // numeric prefix such as "12" in 12G
     private var searchResults: [PDFSelection] = []
     private var searchIndex = 0
-    private var marks: [Character: (page: Int, point: NSPoint)] = [:]
+    /// Where `''` goes back to: the place before the last jump.
+    private var previousSpot: (page: Int, point: NSPoint)?
     private var lastClick: (page: PDFPage, point: NSPoint)?
     private var fileStamp: [String] = []
     private var changedStamp: [String] = []
@@ -87,7 +88,8 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         window.delegate = self
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("nox-document")
-        window.tabbingMode = .disallowed
+        window.tabbingMode = .preferred           // PDFs open as tabs of one window
+        window.tabbingIdentifier = "nox-documents"
 
         pdfView.displayMode = .singlePageContinuous
         pdfView.displaysPageBreaks = true
@@ -339,7 +341,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     // MARK: - Keys
 
-    private static let prefixes: Set<String> = ["g", "h", "d", "m", "'", ","]
+    private static let prefixes: Set<String> = ["g", "h", "d", "m", "'", "`", ","]
 
     /// Returns true when the key was handled.
     func handleKey(_ event: NSEvent) -> Bool {
@@ -390,13 +392,15 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         let sequence = pending + key
         if pending.isEmpty, Self.prefixes.contains(sequence) {
             pending = sequence
-            message(visual != nil && sequence == "h" ? Keymap.continuations["h"]! : Keymap.continuations[sequence] ?? "")
+            message(sequence == "'" || sequence == "`" ? marksSummary()
+                    : visual != nil && sequence == "h" ? Keymap.continuations["h"]! : Keymap.continuations[sequence] ?? "")
             updateStatus()
             return true
         }
         let times = Int(count) ?? 1
         let explicitCount = count.isEmpty ? nil : Int(count)
-        if sequence.count > 1, Keymap.continuations[String(sequence.prefix(1))] == messageLabel.stringValue { message("") }
+        if sequence.count > 1, Keymap.continuations[String(sequence.prefix(1))] == messageLabel.stringValue
+            || ((pending == "'" || pending == "`") && messageLabel.stringValue == marksSummary()) { message("") }
         pending = ""; count = ""
         if visual != nil, let handled = performVisual(sequence, times: times) {
             updateStatus()
@@ -415,8 +419,11 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case " ": scroll(by: visibleHeight * 0.9)
         case "J": goToPage(topPageIndex + 1 + times)
         case "K": goToPage(topPageIndex + 1 - times)
-        case "G": number.map(goToPage) ?? pdfView.goToLastPage(nil)
-        case "gg": goToPage(number ?? 1)
+        case "G": rememberSpot(); number.map(goToPage) ?? pdfView.goToLastPage(nil)
+        case "gg": rememberSpot(); goToPage(number ?? 1)
+        case "''", "``": jumpBack()
+        case "gt": switchTab(to: number)
+        case "gT": switchTab(by: -times)
         case "+", "=": zoom(by: 1.1)
         case "-": zoom(by: 1 / 1.1)
         case "w": pdfView.autoScales = true
@@ -450,7 +457,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                 switch mode {
                 case "h": highlight(letter); return true
                 case "m": setMark(letter); return true
-                case "'": jumpToMark(letter); return true
+                case "'", "`": jumpToMark(letter); return true
                 default: break
                 }
             }
@@ -519,17 +526,107 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         if let top { pdfView.go(to: top) }
     }
 
+    // MARK: - Marks (as in Vim)
+    //
+    // ma … mz: marks in this PDF, remembered across sessions.
+    // mA … mZ: global marks; 'A opens that PDF at that place from anywhere.
+    // '' (or ``): back to where you were before the last jump.
+
+    private static let localMarksKey = "marks", globalMarksKey = "globalMarks"
+
+    private var localMarks: [String: [String: Double]] {
+        get { (UserDefaults.standard.dictionary(forKey: Self.localMarksKey)?[path] as? [String: [String: Double]]) ?? [:] }
+        set {
+            var all = UserDefaults.standard.dictionary(forKey: Self.localMarksKey) ?? [:]
+            all[path] = newValue
+            UserDefaults.standard.set(all, forKey: Self.localMarksKey)
+        }
+    }
+
+    private static var globalMarks: [String: [String: Any]] {
+        get { (UserDefaults.standard.dictionary(forKey: globalMarksKey) as? [String: [String: Any]]) ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: globalMarksKey) }
+    }
+
+    private var currentSpot: (page: Int, point: NSPoint)? {
+        guard let dest = topDestination, let page = dest.page, let doc = document else { return nil }
+        return (doc.index(for: page), dest.point)
+    }
+
+    // MARK: - Tabs
+
+    /// `gt` next tab, `3gt` tab 3, `gT` previous tab.
+    private func switchTab(to number: Int? = nil, by delta: Int = 1) {
+        guard let tabs = window.tabbedWindows, tabs.count > 1 else { message("only one tab (o opens another PDF)"); return }
+        let current = tabs.firstIndex { $0 === window } ?? 0
+        let target = number.map { $0 - 1 } ?? current + delta
+        guard number == nil || (0..<tabs.count).contains(target) else { message("no tab \(number!)", error: true); return }
+        tabs[((target % tabs.count) + tabs.count) % tabs.count].makeKeyAndOrderFront(nil)
+    }
+
+    /// Call before any jump, so `''` can come back.
+    func rememberSpot() {
+        if let spot = currentSpot { previousSpot = spot }
+    }
+
+    func go(toPage page: Int, y: CGFloat) {
+        guard let doc = document, let target = doc.page(at: max(0, min(page, doc.pageCount - 1))) else { return }
+        pdfView.go(to: PDFDestination(page: target, at: NSPoint(x: target.bounds(for: .mediaBox).minX, y: y)))
+        updateStatus()
+    }
+
     private func setMark(_ letter: Character) {
-        guard let dest = topDestination, let page = dest.page, let doc = document else { return }
-        marks[letter] = (doc.index(for: page), dest.point)
-        message("mark \(letter) set")
+        guard letter.isLetter, let spot = currentSpot else { message("marks are letters: a–z here, A–Z across files", error: true); return }
+        let entry: [String: Double] = ["page": Double(spot.page), "y": Double(spot.point.y)]
+        if letter.isUppercase {
+            Self.globalMarks[String(letter)] = ["file": path, "page": spot.page, "y": Double(spot.point.y)]
+            message("mark \(letter) set (all files): p. \(spot.page + 1)")
+        } else {
+            localMarks[String(letter)] = entry
+            message("mark \(letter) set: p. \(spot.page + 1)")
+        }
     }
 
     private func jumpToMark(_ letter: Character) {
-        guard let mark = marks[letter], let page = document?.page(at: mark.page) else {
+        if letter.isUppercase {
+            guard let mark = Self.globalMarks[String(letter)], let file = mark["file"] as? String,
+                  let page = mark["page"] as? Int, let y = mark["y"] as? Double else {
+                message("no mark \(letter)", error: true); return
+            }
+            if file == path {
+                rememberSpot()
+                go(toPage: page, y: CGFloat(y))
+            } else if FileManager.default.fileExists(atPath: file) {
+                (NSApp.delegate as? AppDelegate)?.open(URL(fileURLWithPath: file), page: page, y: CGFloat(y))
+            } else {
+                message("mark \(letter): \((file as NSString).lastPathComponent) no longer exists", error: true)
+            }
+            return
+        }
+        guard let mark = localMarks[String(letter)], let page = mark["page"], let y = mark["y"] else {
             message("no mark \(letter)", error: true); return
         }
-        pdfView.go(to: PDFDestination(page: page, at: mark.point))
+        rememberSpot()
+        go(toPage: Int(page), y: CGFloat(y))
+    }
+
+    /// `''`: back to the place before the last jump (again: forth).
+    private func jumpBack() {
+        guard let back = previousSpot else { message("no previous jump", error: true); return }
+        rememberSpot()
+        go(toPage: back.page, y: back.point.y)
+    }
+
+    /// Shown after `'`: the marks you can jump to.
+    private func marksSummary() -> String {
+        let local = localMarks.sorted { $0.key < $1.key }.map { "'\($0.key) p.\(Int($0.value["page"] ?? 0) + 1)" }
+        let global = Self.globalMarks.sorted { $0.key < $1.key }.map { key, mark -> String in
+            let file = ((mark["file"] as? String ?? "") as NSString).lastPathComponent
+            let page = (mark["page"] as? Int ?? 0) + 1
+            return file == url.lastPathComponent ? "'\(key) p.\(page)" : "'\(key) \(file) p.\(page)"
+        }
+        let all = local + global + (previousSpot.map { ["'' p.\($0.page + 1)"] } ?? [])
+        return all.isEmpty ? "no marks yet: ma sets mark a (mA: across files)" : all.joined(separator: "   ")
     }
 
     // MARK: - Search and page prompt
@@ -560,7 +657,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             let mode = inputMode
             endInput()
             if mode == .search, !text.isEmpty { search(text) }
-            if mode == .page, let number = Int(text) { goToPage(number) }
+            if mode == .page, let number = Int(text) { rememberSpot(); goToPage(number) }
             updateStatus()
             return true
         }
@@ -591,6 +688,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     }
 
     private func showSearchResult() {
+        rememberSpot()
         let result = searchResults[searchIndex]
         pdfView.setCurrentSelection(result, animate: false)
         pdfView.go(to: result)
@@ -800,6 +898,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     }
 
     private func jump(to entry: NoteEntry) {
+        rememberSpot()
         let bounds = entry.annotation.bounds
         let box = entry.page.bounds(for: .mediaBox)
         pdfView.go(to: PDFDestination(page: entry.page, at: NSPoint(x: box.minX, y: min(bounds.maxY + 80, box.maxY))))
@@ -1086,8 +1185,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private func follow(_ annotation: PDFAnnotation) {
         if let destination = annotation.destination ?? (annotation.action as? PDFActionGoTo)?.destination {
+            rememberSpot()
             pdfView.go(to: destination)
-            message("Ctrl-o to come back")
+            message("'' or Ctrl-o to come back")
         } else if let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url {
             NSWorkspace.shared.open(url)
             message("opened \(url.absoluteString)")
@@ -1116,6 +1216,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             guard let self, let doc = self.document else { return }
             self.picker = nil
             let node = self.outlineNode(root, row)
+            self.rememberSpot()
             if let dest = node?.destination ?? (node?.action as? PDFActionGoTo)?.destination { self.pdfView.go(to: dest) }
             else if pages[row] >= 0, let page = doc.page(at: pages[row]) { self.pdfView.go(to: page) }
             self.window.makeFirstResponder(self.pdfView)
@@ -1388,6 +1489,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
               let page = document?.page(at: hit.page - 1) else {
             message("synctex: no match for line \(line)", error: true); return
         }
+        rememberSpot()
         let box = page.bounds(for: .mediaBox)
         let point = NSPoint(x: box.minX + hit.x, y: box.maxY - hit.y)
         pdfView.go(to: PDFDestination(page: page, at: NSPoint(x: box.minX, y: point.y + 120)))
@@ -1475,7 +1577,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private static let positionsKey = "positions"
 
+    /// Positions are only saved once the window is up and the saved one restored: while a
+    /// window is being set up PDFKit reports "page 1", which would overwrite the real place.
+    private var positionReady = false
+
     private func savePosition() {
+        guard positionReady, window.isVisible, pdfView.bounds.height > 0 else { return }
         guard let dest = topDestination, let page = dest.page, let doc = document else { return }
         var all = UserDefaults.standard.dictionary(forKey: Self.positionsKey) ?? [:]
         all[path] = ["page": doc.index(for: page), "y": dest.point.y,
@@ -1485,13 +1592,26 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private func restorePosition() {
         guard let saved = UserDefaults.standard.dictionary(forKey: Self.positionsKey)?[path] as? [String: Any],
-              let index = saved["page"] as? Int, let page = document?.page(at: index) else { return }
+              let index = saved["page"] as? Int, let page = document?.page(at: index) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.positionReady = true }
+            return
+        }
         if saved["auto"] as? Bool == false, let scale = saved["scale"] as? CGFloat {
             pdfView.autoScales = false
             pdfView.scaleFactor = scale
         }
         let y = saved["y"] as? CGFloat ?? page.bounds(for: .mediaBox).maxY
-        DispatchQueue.main.async { self.pdfView.go(to: PDFDestination(page: page, at: NSPoint(x: 0, y: y))) }
+        // The window needs its layout before PDFKit will scroll, and a fresh launch can lay it
+        // out again afterwards; so go there once, then check again (unless you've moved on).
+        let destination = PDFDestination(page: page, at: NSPoint(x: page.bounds(for: .mediaBox).minX, y: y))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.pdfView.go(to: destination)
+            self.updateStatus()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                if self.topPageIndex == 0, index != 0 { self.pdfView.go(to: destination); self.updateStatus() }
+                self.positionReady = true
+            }
+        }
     }
 
     // MARK: - Help and closing
@@ -1575,10 +1695,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                               "screen": screenPoint(of: $0)] },
                 "sheet": window.attachedSheet != nil,
                 "popover": popover?.isShown ?? false,
+                "tabs": window.tabbedWindows?.count ?? 1, "tabIndex": (window.tabbedWindows?.firstIndex { $0 === window } ?? 0) + 1,
                 "visual": visual != nil, "hints": hints.count, "links": linkHints.count,
                 "presentation": presentation?.state ?? [:], "spread": pdfView.displayMode == .twoUpContinuous,
                 "selection": pdfView.currentSelection?.string ?? "",
                 "selectionPages": pdfView.currentSelection?.pages.compactMap { document?.index(for: $0) } ?? []]
     }
 }
+
 

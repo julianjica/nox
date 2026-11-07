@@ -92,7 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var frontController: DocumentController? {
-        controllers.first { $0.window.isKeyWindow } ?? controllers.last
+        // The key window, else the frontmost visible one (the selected tab of the front window).
+        controllers.first { $0.window.isKeyWindow }
+            ?? NSApp.orderedWindows.lazy.compactMap { w in self.controllers.first { $0.window === w } }.first
+            ?? controllers.last
     }
 
     @discardableResult
@@ -102,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             existing.window.makeKeyAndOrderFront(nil)
             return existing
         }
+        let host = frontController?.window
         guard let controller = DocumentController(url: url) else {
             let alert = NSAlert()
             alert.messageText = "Could not open \(url.lastPathComponent)"
@@ -111,9 +115,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onClose = { [weak self] closed in
             self?.controllers.removeAll { $0 === closed }
         }
+        // New PDFs join the front window as a tab.
+        if let host, host !== controller.window, host.isVisible {
+            host.addTabbedWindow(controller.window, ordered: .above)
+            controller.window.makeKeyAndOrderFront(nil)
+        }
         controllers.append(controller)
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         return controller
+    }
+
+    /// Opens (or focuses) a PDF at a page and height, e.g. for a global mark.
+    func open(_ url: URL, page: Int, y: CGFloat) {
+        let wasOpen = controllers.contains { $0.url == url.standardizedFileURL.resolvingSymlinksInPath() }
+        guard let controller = open(url) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (wasOpen ? 0 : 0.3)) {
+            controller.rememberSpot()
+            controller.go(toPage: page, y: y)
+        }
     }
 
     @objc func openPanel() {
@@ -174,6 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "\t")
+            .keyEquivalentModifierMask = [.control]
+        windowMenu.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "\t")
+            .keyEquivalentModifierMask = [.control, .shift]
+        windowMenu.addItem(withTitle: "Move Tab to New Window", action: #selector(NSWindow.moveTabToNewWindow(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: "Merge All Windows", action: #selector(NSWindow.mergeAllWindows(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
             .keyEquivalentModifierMask = [.command, .control]
         windowItem.submenu = windowMenu

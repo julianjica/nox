@@ -22,6 +22,8 @@ It shares no code with Sioyek; the two can share the same notes scripts.
 - **Table of contents** (`t`) and **link hints** (`f`): follow citations and references from the keyboard.
 - **SyncTeX**: `nox main.pdf --forward LINE main.tex` shows where a source line ended up; Shift-click jumps back to the
   source in Neovim (via VimTeX).
+- **Tabs**: PDFs open as tabs of one window (`gt` / `gT` / `3gt`, Ctrl-Tab); drag a tab out for its own window.
+- **Vim marks**: `ma` / `'a` per PDF and kept across sessions, `mA` / `'A` across files, `''` back to before the last jump.
 - **Auto-reload** when the file changes (LaTeX recompiles), keeping your place. Each PDF reopens where you left it.
 - `?` shows every key; after a prefix key (`h`, `g`, `,` …) the status bar lists what can follow.
 
@@ -64,7 +66,9 @@ Move
   gg / G / 12G           first page / last page / page 12
   :                      go to a page (type its number)
   Ctrl-o / Ctrl-i        back / forward after following a link
-  m{a-z} / '{a-z}        set a mark / jump to it
+  m{a-z} / '{a-z}        set a mark in this PDF / jump to it (kept across sessions; ` works like ')
+  m{A-Z} / '{A-Z}        global mark: 'A opens that PDF at that place from any PDF
+  ''                     back to where you were before the last jump (again: forth)
   t                      table of contents (j/k, ↩ go)
   f                      label the links on screen; type one to follow it (Ctrl-o back)
 
@@ -112,8 +116,9 @@ LaTeX and the notes file
   ,q                     quote the selection into <file>.notes.md
   ,n                     open <file>.notes.md in Neovim
 
-Files
-  r / o / q              reload / open another PDF / close
+Files and tabs
+  r / o / q              reload / open another PDF (in a new tab) / close this tab
+  gt / gT / 3gt          next tab / previous tab / tab 3 (Ctrl-Tab works too)
   ?                      this list
 ```
 

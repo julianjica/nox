@@ -12,7 +12,9 @@ enum Keymap {
             ("gg / G / 12G", "first page / last page / page 12"),
             (":", "go to a page (type its number)"),
             ("Ctrl-o / Ctrl-i", "back / forward after following a link"),
-            ("m{a-z} / '{a-z}", "set a mark / jump to it"),
+            ("m{a-z} / '{a-z}", "set a mark in this PDF / jump to it (kept across sessions; ` works like ')"),
+            ("m{A-Z} / '{A-Z}", "global mark: 'A opens that PDF at that place from any PDF"),
+            ("''", "back to where you were before the last jump (again: forth)"),
             ("t", "table of contents (j/k, ↩ go)"),
             ("f", "label the links on screen; type one to follow it (Ctrl-o back)"),
         ]),
@@ -60,19 +62,19 @@ enum Keymap {
             (",q", "quote the selection into <file>.notes.md"),
             (",n", "open <file>.notes.md in Neovim"),
         ]),
-        ("Files", [
-            ("r / o / q", "reload / open another PDF / close"),
+        ("Files and tabs", [
+            ("r / o / q", "reload / open another PDF (in a new tab) / close this tab"),
+            ("gt / gT / 3gt", "next tab / previous tab / tab 3 (Ctrl-Tab works too)"),
             ("?", "this list"),
         ]),
     ]
 
     /// What can follow a pending prefix key.
     static let continuations: [String: String] = [
-        "g": "gg first page   gn list of highlights and notes",
+        "g": "gg first page   gn list of highlights and notes   gt / gT next / previous tab",
         "h": "ha yellow   hb green   hc cyan   hd pink   he orange",
         "d": "dh delete the highlight / note you last clicked",
-        "m": "m + a letter: set a mark",
-        "'": "' + a letter: jump to a mark",
+        "m": "m + a letter: set a mark (a–z this PDF, A–Z across files)",
         ",": ",c dark mode   ,f full screen   ,q quote to notes file   ,n open notes file   ,e export highlights/notes",
     ]
 

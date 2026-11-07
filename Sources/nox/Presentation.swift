@@ -3,6 +3,7 @@ import PDFKit
 
 /// A borderless window that can still take keys.
 final class KeyWindow: NSWindow {
+    override var tabbingMode: NSWindow.TabbingMode { get { .disallowed } set {} }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
