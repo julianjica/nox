@@ -8,6 +8,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     let url: URL
     let window: NSWindow
     let pdfView = PDFView()
+    /// `T`: page thumbnails down the left side.
+    private let thumbnails = PDFThumbnailView()
+    private var thumbnailsWidth: NSLayoutConstraint!
     private let statusLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(labelWithString: "")
     private let input = NSTextField()
@@ -45,6 +48,14 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// Second step of `v`: the labels are on the words of the chosen line.
     private var hintWords = false
     private var linkHints: [String: (annotation: PDFAnnotation, page: PDFPage)] = [:]
+    /// `F`: labels on the citations and links that can be previewed.
+    private var previewHints: [String: (item: References.Item, page: PDFPage)] = [:]
+    /// Citations and links found on each page (for hover previews).
+    private var referenceItems: [Int: [References.Item]] = [:]
+    private var preview: NSPopover?
+    private var previewPlace: References.Place?
+    private var hovered: (page: Int, rect: NSRect)?
+    private var hoverTimer: Timer?
     var presentation: PresentationController?
     private var picker: PickerSheet?
     private var pageTexts: [Int: NSString] = [:]
@@ -127,14 +138,24 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         input.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(input)
 
+        thumbnails.pdfView = pdfView
+        thumbnails.thumbnailSize = NSSize(width: 120, height: 160)
+        thumbnails.backgroundColor = Theme.darker
+        thumbnails.maximumNumberOfColumns = 1
+        thumbnails.allowsDragging = false
+        thumbnails.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView()
+        content.addSubview(thumbnails)
         content.addSubview(pdfView)
         content.addSubview(bar)
         window.contentView = content
 
         NSLayoutConstraint.activate([
+            thumbnails.topAnchor.constraint(equalTo: content.topAnchor),
+            thumbnails.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            thumbnails.bottomAnchor.constraint(equalTo: bar.topAnchor),
             pdfView.topAnchor.constraint(equalTo: content.topAnchor),
-            pdfView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            pdfView.leadingAnchor.constraint(equalTo: thumbnails.trailingAnchor),
             pdfView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: bar.topAnchor),
             bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -151,6 +172,11 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             messageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: statusLabel.trailingAnchor, constant: 12),
         ])
 
+        thumbnailsWidth = thumbnails.widthAnchor.constraint(equalToConstant: 0)
+        thumbnailsWidth.isActive = true
+        thumbnails.isHidden = true
+        if UserDefaults.standard.bool(forKey: "thumbnails") { toggleThumbnails(saying: false) }
+
         NotificationCenter.default.addObserver(self, selector: #selector(viewChanged),
                                                name: .PDFViewPageChanged, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(viewChanged),
@@ -160,7 +186,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// Keys and Shift+click are caught here, before PDFKit's own views see them.
     private func installMonitors() {
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, self.inputMode == .none else { return event }
+            guard let self else { return event }
+            // While a note is being written, its keys are text, never commands.
+            if let editor = self.editor, event.window === self.window || event.window === editor.window {
+                return editor.handleKey(event) ? nil : event
+            }
+            guard event.window === self.window, self.inputMode == .none else { return event }
             return self.handleKey(event) ? nil : event
         } as Any)
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
@@ -170,6 +201,11 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         } as Any)
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
             if let self, event.window === self.window { DispatchQueue.main.async { self.mouseUp() } }
+            return event
+        } as Any)
+        window.acceptsMouseMovedEvents = true
+        monitors.append(NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            if let self, event.window === self.window { self.hover(at: self.pdfView.convert(event.locationInWindow, from: nil)) }
             return event
         } as Any)
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
@@ -218,6 +254,10 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         let label = NSTextField(wrappingLabelWithString: note.isEmpty ? "No note on this highlight." : note)
         label.textColor = note.isEmpty ? Theme.comment : Theme.foreground
         label.font = .systemFont(ofSize: 13)
+        if !note.isEmpty {
+            label.allowsEditingTextAttributes = true   // keeps the rendered styles and links
+            label.attributedStringValue = Markdown.render(note, .init(font: .systemFont(ofSize: 13)))
+        }
         label.preferredMaxLayoutWidth = 340
         label.isSelectable = true
         let edit = NSButton(title: note.isEmpty ? "Add note" : "Edit note", target: self, action: #selector(popoverEdit))
@@ -333,6 +373,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         var parts = ["\(number)/\(doc.pageCount)", "\(zoom)%"]
         if visual != nil { parts.insert("-- VISUAL --", at: 0) }
         if !linkHints.isEmpty { parts.insert("-- pick a link --", at: 0) }
+        if !previewHints.isEmpty { parts.insert("-- pick a citation to preview --", at: 0) }
         if !hints.isEmpty { parts.insert(hintWords ? "-- pick a word --" : hintLinewise ? "-- pick a line (whole lines) --" : "-- pick a line --", at: 0) }
         if !Theme.recolor { parts.append("original colors") }
         if NotesExport.documentNote(in: doc) != nil { parts.append("✎ PDF note (A)") }
@@ -354,9 +395,14 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { return false }
+        if let preview, preview.isShown {
+            if event.keyCode == 36 || event.keyCode == 76 { goToPreview(); return true }   // Return
+            closePreview()
+            if event.keyCode == 53 { return true }
+        }
         if event.keyCode == 53 {  // Esc
             pending = ""; count = ""; tentative = nil
-            if !hints.isEmpty || !linkHints.isEmpty || visual != nil {
+            if !hints.isEmpty || !linkHints.isEmpty || !previewHints.isEmpty || visual != nil {
                 clearHints(); exitVisual(clear: true)
             } else {
                 pdfView.highlightedSelections = nil
@@ -390,7 +436,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     }
 
     private func handle(key: String) -> Bool {
-        if !hints.isEmpty || !linkHints.isEmpty { typeHint(key); return true }
+        if !hints.isEmpty || !linkHints.isEmpty || !previewHints.isEmpty { typeHint(key); return true }
         if pending.isEmpty, let digit = key.first, digit.isNumber, !(digit == "0" && count.isEmpty) {
             count += key
             updateStatus()
@@ -418,7 +464,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             return true
         } else if visual != nil, pending.isEmpty, "fFtT".contains(key) {
             pending = key
-            message("\(key) + a character: \(key == "f" || key == "t" ? "forward" : "backward") on this line to \(key.lowercased() == "f" ? "it" : "just before it")   ; repeat   , back")
+            message("\(key) + a character: \(key == "f" || key == "t" ? "forward" : "backward") to \(key.lowercased() == "f" ? "it" : "just before it") (past the line too)   ; repeat   , back")
             updateStatus()
             return true
         }
@@ -475,7 +521,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "p": startPresentation()
         case "t": showOutline()
         case "f": showLinkHints()
+        case "F": showPreviewHints()
         case "s": toggleSpread()
+        case "T": toggleThumbnails()
         case "V": startVisual(linewise: true)
         case "dh": deleteHighlight()
         case "a": annotate()
@@ -803,75 +851,136 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     func annotate(note given: String? = nil) {
         if let selection = pdfView.currentSelection, let quote = selectedText {
             let color = Theme.highlightColors[lastColor] ?? Theme.highlightColors["a"]!
-            let apply: (String) -> Void = { [weak self] text in
-                guard let self else { return }
-                let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let added = self.addHighlight(selection, color: color, note: note)
-                if added == nil { self.message("could not place a highlight on that selection", error: true); return }
+            let create: (String) -> (PDFAnnotation, PDFPage)? = { [weak self] note in
+                guard let self else { return nil }
+                guard let added = self.addHighlight(selection, color: color, note: note), let page = added.page else {
+                    self.message("could not place a highlight on that selection", error: true); return nil
+                }
                 self.pdfView.clearSelection()
-                self.save(saying: note.isEmpty ? "highlighted" : "note saved in the PDF")
+                return (added, page)
             }
-            if let given { apply(given) } else {
-                openEditor(heading: "Note on highlight", quote: quote, text: "", near: viewRect(of: selection)) { if let t = $0 { apply(t) } }
-            }
+            noteSession(heading: "Note on highlight", quote: quote, near: viewRect(of: selection), box: NoteBox(),
+                        deleteWhenEmpty: false, given: given, create: create)
             return
         }
         guard let (page, point) = stickyLocation() else { return }
-        let apply: (String) -> Void = { [weak self] text in
-            guard let self else { return }
-            let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !note.isEmpty else { self.message("empty note, nothing saved"); return }
-            let annotation = PDFAnnotation(bounds: NSRect(x: point.x, y: point.y - 20, width: 20, height: 20),
-                                           forType: .text, withProperties: nil)
+        let bounds = NSRect(x: point.x, y: point.y - 20, width: 20, height: 20)
+        let create: (String) -> (PDFAnnotation, PDFPage)? = { [weak self] note in
+            guard let self else { return nil }
+            let annotation = PDFAnnotation(bounds: bounds, forType: .text, withProperties: nil)
             annotation.iconType = .comment
             annotation.color = Theme.highlightColors["a"]!
             annotation.userName = "nox"
             annotation.contents = note
             self.change(.add(annotation, page))
-            self.save(saying: "note saved in the PDF")
+            return (annotation, page)
         }
-        if let given { apply(given) } else {
-            openEditor(heading: "Note on page \((document?.index(for: page) ?? 0) + 1)", quote: nil, text: "",
-                       near: pdfView.convert(NSRect(x: point.x, y: point.y - 20, width: 20, height: 20), from: page)) {
-                if let t = $0 { apply(t) }
-            }
-        }
+        noteSession(heading: "Note on page \((document?.index(for: page) ?? 0) + 1)", quote: nil,
+                    near: pdfView.convert(bounds, from: page), box: NoteBox(), deleteWhenEmpty: true, given: given, create: create)
     }
 
     /// `A`: the note on the whole PDF: kept inside it (a note in the first page's corner),
-    /// listed first in `gn` and in the export. Saving it empty deletes it.
+    /// listed first in `gn` and in the export. Emptying it deletes it.
     func editDocumentNote(note given: String? = nil) {
         guard let doc = document, let first = doc.page(at: 0) else { return }
-        let existing = NotesExport.documentNote(in: doc)
-        let apply: (String) -> Void = { [weak self] text in
+        let box = NoteBox()
+        if let (annotation, page) = NotesExport.documentNote(in: doc) { box.annotation = annotation; box.page = page }
+        let create: (String) -> (PDFAnnotation, PDFPage)? = { [weak self] note in
+            guard let self else { return nil }
+            let crop = first.bounds(for: .cropBox)
+            let annotation = PDFAnnotation(bounds: NSRect(x: crop.minX + 6, y: crop.maxY - 26, width: 20, height: 20),
+                                           forType: .text, withProperties: nil)
+            annotation.iconType = .note
+            annotation.color = Theme.highlightColors["a"]!
+            annotation.userName = "nox"
+            annotation.contents = note
+            NotesExport.markAsDocumentNote(annotation)
+            self.change(.add(annotation, first))
+            return (annotation, first)
+        }
+        noteSession(heading: "Note on this PDF", quote: nil, near: .null, box: box, deleteWhenEmpty: true,
+                    given: given, create: create)
+    }
+
+    /// The note an editor is working on; empty until its annotation exists.
+    final class NoteBox {
+        var annotation: PDFAnnotation?
+        var page: PDFPage?
+    }
+
+    /// Brings a note to `text`: creates its annotation the first time, updates its text, or (for
+    /// sticky notes, once the editor closes) removes it when emptied. Returns a status message,
+    /// or nil when nothing changed.
+    private func setNote(_ box: NoteBox, to text: String, final: Bool, deleteWhenEmpty: Bool,
+                         create: (String) -> (PDFAnnotation, PDFPage)?) -> String? {
+        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let annotation = box.annotation, let page = box.page {
+            if note.isEmpty && deleteWhenEmpty {
+                guard final else { return nil }
+                change(.remove(annotation, page))
+                box.annotation = nil
+                return "note deleted"
+            }
+            let new: String? = note.isEmpty ? nil : note
+            guard (annotation.contents ?? "") != (new ?? "") else { return nil }
+            change(.contents(annotation, page, old: annotation.contents, new: new))
+            return note.isEmpty ? "note removed (highlight kept)" : "note saved in the PDF"
+        }
+        guard !note.isEmpty || (final && !deleteWhenEmpty) else { return nil }
+        guard let (annotation, page) = create(note) else { return nil }
+        box.annotation = annotation
+        box.page = page
+        return note.isEmpty ? "highlighted" : "note saved in the PDF"
+    }
+
+    /// Opens the note editor and keeps the note saved as it is typed. Closing keeps it (one undo
+    /// step for the whole session); Discard takes back everything since it opened.
+    /// `given` skips the editor (used by `nox --note` / `--pdf-note`).
+    private func noteSession(heading: String, quote: String?, near rect: NSRect, box: NoteBox, deleteWhenEmpty: Bool,
+                             given: String?, create: @escaping (String) -> (PDFAnnotation, PDFPage)?) {
+        if let given {
+            let label = setNote(box, to: given, final: true, deleteWhenEmpty: deleteWhenEmpty, create: create)
+            if let label { save(saying: label) }
+            updateStatus()
+            return
+        }
+        guard window.attachedSheet == nil, editor == nil else { return }
+        let editor = NoteEditor(heading: heading, quote: quote, text: box.annotation?.contents ?? "") { [weak self] outcome in
             guard let self else { return }
-            let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let (annotation, page) = existing {
-                if note.isEmpty {
-                    self.change(.remove(annotation, page))
-                    self.save(saying: "PDF note deleted")
-                } else if note != annotation.contents {
-                    self.change(.contents(annotation, page, old: annotation.contents, new: note))
-                    self.save(saying: "PDF note saved")
+            self.editor = nil
+            self.window.makeFirstResponder(self.pdfView)
+            switch outcome {
+            case .keep(let text):
+                let label = self.setNote(box, to: text, final: true, deleteWhenEmpty: deleteWhenEmpty, create: create)
+                if !self.pendingEdits.isEmpty { self.save(saying: label ?? "note saved in the PDF") }
+            case .discard:
+                if !self.pendingEdits.isEmpty {
+                    for edit in self.pendingEdits.reversed() { self.apply(edit, backwards: true) }
+                    self.pendingEdits = []
+                    self.save(saying: "note discarded", recording: false)
+                } else {
+                    self.message("")
                 }
-            } else if !note.isEmpty {
-                let box = first.bounds(for: .cropBox)
-                let annotation = PDFAnnotation(bounds: NSRect(x: box.minX + 6, y: box.maxY - 26, width: 20, height: 20),
-                                               forType: .text, withProperties: nil)
-                annotation.iconType = .note
-                annotation.color = Theme.highlightColors["a"]!
-                annotation.userName = "nox"
-                annotation.contents = note
-                NotesExport.markAsDocumentNote(annotation)
-                self.change(.add(annotation, first))
-                self.save(saying: "PDF note saved")
             }
             self.updateStatus()
         }
-        if let given { apply(given); return }
-        openEditor(heading: "Note on this PDF", quote: nil, text: existing?.annotation.contents ?? "", near: .null) {
-            if let t = $0 { apply(t) }
+        editor.onChange = { [weak self] text in
+            guard let self else { return }
+            if self.setNote(box, to: text, final: false, deleteWhenEmpty: deleteWhenEmpty, create: create) != nil {
+                self.save(saying: "saved", live: true)
+                self.updateStatus()
+            }
         }
+        self.editor = editor
+        // The page the note belongs to, so the editor can sit in the margin beside it.
+        let visible = pdfView.bounds
+        var target = rect
+        if target.isNull || !target.intersects(visible) {
+            target = NSRect(x: visible.midX, y: pdfView.isFlipped ? visible.minY + 60 : visible.maxY - 60, width: 1, height: 1)
+        }
+        let page = pdfView.page(for: NSPoint(x: target.midX, y: target.midY), nearest: true) ?? pdfView.currentPage
+        let pageRect = page.map { pdfView.convert($0.bounds(for: .cropBox), from: $0) } ?? .null
+        editor.show(next: target, page: pageRect, in: pdfView)
     }
 
     /// Where a sticky note goes: the last click, or the top-left of the visible page.
@@ -883,24 +992,16 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     }
 
     /// Where a selection is on screen (its part on the first page shown).
+    /// Test hooks for the note editor.
+    func typeInNote(_ text: String) { editor?.type(text) }
+    func closeNote(discarding: Bool) { editor?.close(discarding: discarding) }
+
     private func viewRect(of selection: PDFSelection) -> NSRect {
         let pages = selection.pages
         let page = pages.first { pdfView.visiblePages.contains($0) } ?? pages.first
         guard let page else { return .null }
         let r = selection.bounds(for: page)
         return r.minX.isFinite && r.minY.isFinite ? pdfView.convert(r, from: page) : .null
-    }
-
-    private func openEditor(heading: String, quote: String?, text: String, near rect: NSRect,
-                            done: @escaping (String?) -> Void) {
-        guard window.attachedSheet == nil, editor == nil else { return }
-        let editor = NoteEditor(heading: heading, quote: quote, text: text) { [weak self] result in
-            self?.editor = nil
-            self?.window.makeFirstResponder(self?.pdfView)
-            done(result)
-        }
-        self.editor = editor
-        editor.show(next: rect, in: pdfView)
     }
 
     /// The highlight or sticky note under a click, topmost first.
@@ -928,17 +1029,11 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             ? NoxPage.highlightRects(annotation).map { pdfView.convert($0, from: page) }
                 .reduce(NSRect.null) { $0.union($1) }
             : pdfView.convert(annotation.bounds, from: page)
-        openEditor(heading: heading, quote: quote, text: annotation.contents ?? "", near: rect) { [weak self] result in
-            guard let self, let result else { return }
-            let note = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            if note.isEmpty && annotation.type == "Text" {
-                self.change(.remove(annotation, page))
-                self.save(saying: "note deleted")
-                return
-            }
-            self.change(.contents(annotation, page, old: annotation.contents, new: note.isEmpty ? nil : note))
-            self.save(saying: note.isEmpty ? "note removed (highlight kept)" : "note saved in the PDF")
-        }
+        let box = NoteBox()
+        box.annotation = annotation
+        box.page = page
+        noteSession(heading: heading, quote: quote, near: rect, box: box, deleteWhenEmpty: annotation.type == "Text",
+                    given: nil, create: { _ in nil })
     }
 
     private func quoteText(of annotation: PDFAnnotation, on page: PDFPage) -> String {
@@ -1098,13 +1193,17 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         save(saying: "redone: \(step.label)", recording: false)
     }
 
-    private func save(saying text: String, recording: Bool = true) {
-        if recording, !pendingEdits.isEmpty {
-            undoStack.append((text, pendingEdits))
-            if undoStack.count > 200 { undoStack.removeFirst() }
-            redoStack = []
+    /// Writes the changed pages to the file. `live` (a note being typed) writes without closing
+    /// the undo step, so the whole editing session becomes one step when the note closes.
+    private func save(saying text: String, recording: Bool = true, live: Bool = false) {
+        if !live {
+            if recording, !pendingEdits.isEmpty {
+                undoStack.append((text, pendingEdits))
+                if undoStack.count > 200 { undoStack.removeFirst() }
+                redoStack = []
+            }
+            pendingEdits = []
         }
-        pendingEdits = []
         // Pages are drawn (and cached) with their highlights baked in; redraw the changed ones.
         refreshNotes()
         guard stamp() == fileStamp else {
@@ -1248,7 +1347,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return true
     }
 
-    private static func hintLabels(_ count: Int) -> [String] {
+    static func hintLabels(_ count: Int) -> [String] {
         let alphabet = Array("asdfjklghqwertyuiopzxcvbnm").map(String.init)
         return count <= alphabet.count ? Array(alphabet.prefix(count))
             : Array(alphabet.flatMap { a in alphabet.map { a + $0 } }.prefix(count))
@@ -1321,6 +1420,116 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         }
     }
 
+    // MARK: - Reference preview
+
+    private func referenceItems(on page: PDFPage) -> [References.Item] {
+        guard let index = document?.index(for: page) else { return [] }
+        if let cached = referenceItems[index] { return cached }
+        let found = References.items(on: page)
+        referenceItems[index] = found
+        return found
+    }
+
+    /// Mouse over a citation or internal link: its preview after a short pause.
+    private func hover(at point: NSPoint) {
+        guard editor == nil, window.attachedSheet == nil, presentation == nil, pdfView.bounds.contains(point),
+              let page = pdfView.page(for: point, nearest: false), let index = document?.index(for: page) else {
+            hoverTimer?.invalidate(); hovered = nil; return
+        }
+        let at = pdfView.convert(point, to: page)
+        let item = referenceItems(on: page).first { $0.rect.insetBy(dx: -1, dy: -1).contains(at) }
+        if let item, let hovered, hovered.page == index, hovered.rect == item.rect { return }
+        hoverTimer?.invalidate()
+        guard let item else {
+            hovered = nil
+            if preview?.isShown == true, previewFromHover { closePreview() }
+            return
+        }
+        hovered = (index, item.rect)
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            self?.showPreview(of: item, on: page, fromKeyboard: false)
+        }
+    }
+
+    private var previewFromHover = false
+
+    /// `F`: label every citation and link on screen; typing a label previews it.
+    private func showPreviewHints() {
+        clearHints()
+        var targets: [(References.Item, PDFPage, NSRect)] = []
+        for page in pdfView.visiblePages {
+            for item in referenceItems(on: page) {
+                let r = pdfView.convert(item.rect, from: page)
+                if pdfView.bounds.intersects(r) { targets.append((item, page, r)) }
+            }
+        }
+        guard !targets.isEmpty else { message("no citations or links on screen", error: true); return }
+        for (target, label) in zip(targets, placeTags(at: targets.map { $0.2 }, leftOf: false)) {
+            previewHints[label] = (target.0, target.1)
+        }
+        message("type a label to preview what it cites  ·  Esc cancel")
+        updateStatus()
+    }
+
+    /// Shows what a citation / link points to, next to it.
+    private func showPreview(of item: References.Item, on page: PDFPage, fromKeyboard: Bool) {
+        guard let doc = document else { return }
+        closePreview()
+        guard let place = References.place(of: item.target, in: doc, citedFrom: page, at: item.rect) else {
+            if fromKeyboard { message("could not find what this cites", error: true) }
+            return
+        }
+        let region = place.region
+        let shown = min(2.2, max(1.0, 640 / max(region.width, 1)))       // display scale
+        let image = References.image(of: place, scale: shown * (window.backingScaleFactor))
+        let view = NSImageView(image: image)
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.translatesAutoresizingMaskIntoConstraints = false
+        let size = NSSize(width: region.width * shown, height: min(region.height * shown, 520))
+        let page = NSTextField(labelWithString: "p. \(doc.index(for: place.page) + 1)   ↩ or click: go there   Esc: close")
+        page.font = .systemFont(ofSize: 11)
+        page.textColor = Theme.comment
+        let stack = NSStackView(views: [view, page])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        NSLayoutConstraint.activate([view.widthAnchor.constraint(equalToConstant: size.width),
+                                     view.heightAnchor.constraint(equalToConstant: size.height)])
+        view.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(goToPreview)))
+        let controller = NSViewController()
+        controller.view = stack
+        let pop = NSPopover()
+        pop.contentViewController = controller
+        pop.behavior = .semitransient
+        pop.animates = false
+        pop.appearance = NSAppearance(named: .darkAqua)
+        let anchor = pdfView.convert(item.rect, from: page)
+        let below = pdfView.isFlipped ? pdfView.bounds.maxY - anchor.maxY : anchor.minY - pdfView.bounds.minY
+        let above = pdfView.isFlipped ? anchor.minY : pdfView.bounds.maxY - anchor.maxY
+        let down: NSRectEdge = pdfView.isFlipped ? .maxY : .minY, up: NSRectEdge = pdfView.isFlipped ? .minY : .maxY
+        pop.show(relativeTo: anchor, of: pdfView, preferredEdge: below >= above ? down : up)
+        preview = pop
+        previewPlace = place
+        previewFromHover = !fromKeyboard
+        window.makeKey()        // keys (↩, Esc) stay with the document
+    }
+
+    @objc private func goToPreview() {
+        guard let place = previewPlace else { return }
+        closePreview()
+        rememberSpot()
+        pdfView.go(to: PDFDestination(page: place.page, at: NSPoint(x: place.region.minX, y: place.region.maxY + 20)))
+        message("'' or Ctrl-o to come back")
+        updateStatus()
+    }
+
+    private func closePreview() {
+        preview?.close()
+        preview = nil
+        previewPlace = nil
+    }
+
     /// `t`: the PDF's table of contents.
     private func showOutline() {
         guard window.attachedSheet == nil, let doc = document else { return }
@@ -1366,6 +1575,19 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return walk(root)
     }
 
+    /// `T`: show or hide the page thumbnails (remembered for next time).
+    func toggleThumbnails(saying: Bool = true) {
+        let show = thumbnails.isHidden
+        let top = topDestination
+        thumbnails.isHidden = !show
+        thumbnailsWidth.constant = show ? 150 : 0
+        window.contentView?.layoutSubtreeIfNeeded()
+        if pdfView.autoScales { pdfView.autoScales = true }
+        if let top { pdfView.go(to: top) }
+        UserDefaults.standard.set(show, forKey: "thumbnails")
+        if saying { message(show ? "thumbnails (T to hide; click a page to go there)" : "") }
+    }
+
     /// `s`: two pages side by side (book layout) or one.
     private func toggleSpread() {
         let top = topDestination
@@ -1396,6 +1618,19 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private func typeHint(_ key: String) {
         hintTyped += key
+        if !previewHints.isEmpty {
+            if let target = previewHints[hintTyped] {
+                clearHints()
+                showPreview(of: target.item, on: target.page, fromKeyboard: true)
+            } else if !previewHints.keys.contains(where: { $0.hasPrefix(hintTyped) }) {
+                clearHints()
+                message("no such label", error: true)
+            } else {
+                dimTags()
+            }
+            updateStatus()
+            return
+        }
         if !linkHints.isEmpty {
             if let target = linkHints[hintTyped] {
                 clearHints()
@@ -1448,6 +1683,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         hints = [:]
         hintWords = false
         linkHints = [:]
+        previewHints = [:]
         hintTyped = ""
     }
 
@@ -1583,18 +1819,30 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return TextPos(page: p.page, index: max(i, 0))
     }
 
-    /// f / F / t / T: the next / previous `c` on the line (t / T: the character next to it).
-    /// `again` (for ; and ,) skips a match right next to the cursor, so repeated t moves on.
+    /// f / F / t / T: the next / previous `c` (t / T: the character next to it). Unlike Vim it
+    /// doesn't stop at the end of the line, since PDF lines are short: it reads on through the
+    /// page and the next few pages. `again` (for ; and ,) skips a match right next to the cursor.
     private func find(_ c: unichar, from p: TextPos, forward: Bool, till: Bool, again: Bool) -> TextPos {
-        guard let n = lineNumber(p) else { return p }
-        let line = lines(p.page)[n], s = text(p.page)
-        let last = min(line.end, s.length - 1)
-        var i = p.index + (forward ? 1 : -1)
-        if till && again { i += forward ? 1 : -1 }
-        while i >= line.start && i <= last {
-            if s.character(at: i) == c { return TextPos(page: p.page, index: till ? i + (forward ? -1 : 1) : i) }
-            i += forward ? 1 : -1
+        let step = forward ? 1 : -1
+        let pageCount = document?.pageCount ?? 0
+        var page = p.page
+        var i = p.index + step + (till && again ? step : 0)
+        for _ in 0..<4 {                                    // this page and up to three more
+            let s = text(page)
+            if !forward && i >= s.length { i = s.length - 1 }
+            while i >= 0 && i < s.length {
+                if s.character(at: i) == c {
+                    let index = till ? i - step : i
+                    // t / T at the very start of a page: stay on the match's page
+                    return TextPos(page: page, index: max(0, min(index, s.length - 1)))
+                }
+                i += step
+            }
+            page += step
+            guard page >= 0, page < pageCount else { break }
+            i = forward ? 0 : Int.max
         }
+        message("not found: \(Character(UnicodeScalar(c) ?? " "))", error: true)
         return p
     }
 
@@ -1746,6 +1994,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         searchResults = []
         dirtyPages = []
         pageTexts = [:]
+        referenceItems = [:]
         pageLines = [:]
         clearHints(); visual = nil
         undoStack = []; redoStack = []; pendingEdits = []
@@ -1857,7 +2106,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                                   [.boundsIgnoreFraming, .bestResolution]) else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-        if let sheet = window.attachedSheet ?? editor?.window,
+        if let sheet = window.attachedSheet ?? editor?.window ?? preview?.contentViewController?.view.window,
            let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(sheet.windowNumber), [.boundsIgnoreFraming, .bestResolution]) {
             try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
                 .write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-sheet.png")))
@@ -1873,11 +2122,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                               "note": $0.note, "quote": $0.quote,
                                               "rects": NoxPage.highlightRects($0.annotation).count,
                                               "screen": screenPoint(of: $0)] },
-                "sheet": window.attachedSheet != nil, "editor": editor != nil,
+                "sheet": window.attachedSheet != nil, "editor": editor != nil, "preview": preview?.isShown ?? false, "previewPage": previewPlace.map { (document?.index(for: $0.page) ?? -1) + 1 } ?? 0,
+                "previewable": pdfView.visiblePages.reduce(0) { $0 + referenceItems(on: $1).count }, "editorKey": editor?.window?.isKeyWindow ?? false,
                 "popover": popover?.isShown ?? false,
                 "tabs": window.tabbedWindows?.count ?? 1, "tabIndex": (window.tabbedWindows?.firstIndex { $0 === window } ?? 0) + 1,
                 "visual": visual != nil, "hints": hints.count, "links": linkHints.count,
-                "presentation": presentation?.state ?? [:], "spread": pdfView.displayMode == .twoUpContinuous,
+                "presentation": presentation?.state ?? [:], "spread": pdfView.displayMode == .twoUpContinuous, "thumbnails": !thumbnails.isHidden,
                 "selection": pdfView.currentSelection?.string ?? "",
                 "selectionPages": pdfView.currentSelection?.pages.compactMap { document?.index(for: $0) } ?? []]
     }

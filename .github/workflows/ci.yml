@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app
+        run: NO_INSTALL=1 sh scripts/build.sh
+      - name: Self-test
+        run: build/nox.app/Contents/MacOS/nox --self-test

@@ -11,7 +11,7 @@ var arguments = Array(CommandLine.arguments.dropFirst())
 func absolutePaths(_ args: [String]) -> [String] {
     let cwd = FileManager.default.currentDirectoryPath
     var result: [String] = [], i = 0
-    let valueCounts = ["--page": 1, "--forward": 2, "--keys": 1, "--search": 1, "--state": 1, "--note": 1, "--pdf-note": 1, "--click-note": 1, "--right-click-note": 1, "--menu": 1, "--snapshot": 1, "--pick": 1]
+    let valueCounts = ["--page": 1, "--forward": 2, "--keys": 1, "--search": 1, "--state": 1, "--note": 1, "--pdf-note": 1, "--type": 1, "--close-note": 1, "--click-note": 1, "--right-click-note": 1, "--menu": 1, "--snapshot": 1, "--pick": 1]
     while i < args.count {
         let arg = args[i]
         if let n = valueCounts[arg] {
@@ -40,6 +40,7 @@ if arguments == ["--help"] || arguments == ["-h"] {
       --forward LINE TEX     SyncTeX: show where LINE of TEX ends up in the PDF
     nox --export file.pdf [--write]
                              highlights and notes as Markdown (--write: into file.notes.md)
+    nox --self-test          check that this build works
     In the viewer, press ? (or Cmd-/) for this list:
 
     """ + Keymap.plainText)
@@ -62,6 +63,10 @@ if arguments.first == "--export", arguments.count >= 2 {
         print(NotesExport.markdown(document, pdf: pdf).text, terminator: "")
     }
     exit(0)
+}
+
+if arguments == ["--self-test"] {
+    exit(SelfTest.run())
 }
 
 if arguments.first == "--render-test" {

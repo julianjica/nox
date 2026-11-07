@@ -17,6 +17,8 @@ enum Keymap {
             ("''", "back to where you were before the last jump (again: forth)"),
             ("t", "table of contents (j/k, ↩ go)"),
             ("f", "label the links on screen; type one to follow it (Ctrl-o back)"),
+            ("F", "label citations / links on screen; type one to preview what it cites (↩ go there)"),
+            ("hover", "a citation or link: preview of the reference, figure or equation it points to"),
         ]),
         ("Search", [
             ("/", "search"),
@@ -28,7 +30,7 @@ enum Keymap {
             ("V", "label the visible lines; pick one to select whole lines"),
             ("w / b / e", "next word / previous word / end of word"),
             ("h j k l", "character left / line down / line up / character right"),
-            ("f{c} / F{c}", "to the next / previous c on the line (t{c} / T{c}: just before it)"),
+            ("f{c} / F{c}", "to the next / previous c, past the line too (t{c} / T{c}: just before it)"),
             ("; / ,", "repeat the last f F t T / the same backwards"),
             ("0 / $", "start / end of the line"),
             ("o", "move the other end of the selection"),
@@ -50,6 +52,7 @@ enum Keymap {
             (",c or F8", "dark mode on / off"),
             (",f", "full screen"),
             ("s", "two-page spread on / off"),
+            ("T", "page thumbnails on / off (click one to go there)"),
             ("y or Cmd-C", "copy the selection"),
         ]),
         ("Presentation", [

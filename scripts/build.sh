@@ -4,11 +4,14 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/nox.app"
 
-swift build -c release --package-path "$ROOT"
+# UNIVERSAL=1 builds for Apple silicon and Intel (used for releases).
+if [ "$UNIVERSAL" = "1" ]; then set -- --arch arm64 --arch x86_64; else set --; fi
+swift build -c release --package-path "$ROOT" "$@"
+BIN="$(swift build -c release --package-path "$ROOT" "$@" --show-bin-path)/nox"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp "$ROOT/.build/release/nox" "$APP/Contents/MacOS/nox"
+cp "$BIN" "$APP/Contents/MacOS/nox"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # App icon: drawn by scripts/make-icon.swift (rebuilt only when that script changes).
@@ -24,7 +27,17 @@ if [ ! -f "$ICNS" ] || [ "$ROOT/scripts/make-icon.swift" -nt "$ICNS" ]; then
 fi
 mkdir -p "$APP/Contents/Resources"
 cp "$ICNS" "$APP/Contents/Resources/nox.icns"
+# The `nox` command inside the app, for Homebrew to link (it finds the app through any symlink).
+cat > "$APP/Contents/Resources/nox-cli" <<'CLI'
+#!/bin/sh
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/../MacOS/nox" "$@"
+CLI
+chmod +x "$APP/Contents/Resources/nox-cli"
 codesign --force --sign - "$APP"
+
+# NO_INSTALL=1 (CI) only builds the app.
+if [ "$NO_INSTALL" = "1" ]; then echo "Built $APP"; exit 0; fi
 
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/nox" <<EOF

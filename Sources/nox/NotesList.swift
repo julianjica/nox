@@ -151,7 +151,7 @@ final class NotesList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }
         add(entry.isSticky ? "✎ " : "● ", entry.isSticky ? Theme.accent : entry.annotation.color.withAlphaComponent(1), body)
         add(entry.isDocumentNote ? "whole PDF   " : "p. \(entry.pageIndex + 1)   ", Theme.comment, small)
-        if !entry.note.isEmpty { add(entry.note.replacingOccurrences(of: "\n", with: " "), Theme.foreground, .boldSystemFont(ofSize: 13)) }
+        if !entry.note.isEmpty { add(Markdown.plain(entry.note).replacingOccurrences(of: "\n", with: " "), Theme.foreground, .boldSystemFont(ofSize: 13)) }
         if !entry.quote.isEmpty {
             if !entry.note.isEmpty { add("\n", Theme.comment, small) }
             add("“\(entry.quote)”", Theme.comment, entry.note.isEmpty ? body : small)

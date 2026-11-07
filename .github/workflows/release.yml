@@ -1,0 +1,38 @@
+name: Release
+
+# Push a tag like v0.2.0 to build nox.app (Apple silicon + Intel) and publish it as a release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set the version from the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Resources/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" Resources/Info.plist
+      - name: Build
+        run: UNIVERSAL=1 NO_INSTALL=1 sh scripts/build.sh
+      - name: Self-test
+        run: build/nox.app/Contents/MacOS/nox --self-test
+      - name: Package
+        run: |
+          ditto -c -k --keepParent build/nox.app nox.zip
+          shasum -a 256 nox.zip
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A release made on the GitHub page already exists: attach the app to it. Otherwise create it.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" nox.zip --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" nox.zip --title "nox $GITHUB_REF_NAME" --generate-notes
+          fi

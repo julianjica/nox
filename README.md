@@ -22,7 +22,11 @@ It shares no code with Sioyek; the two can share the same notes scripts.
   Works in two-column papers too.
 - **Presentation mode** (`p`): full-screen slides, presenter view (current and next slide, timer, clock) on the laptop
   when a second display is connected; works with presentation clickers.
-- **Table of contents** (`t`) and **link hints** (`f`): follow citations and references from the keyboard.
+- **Reference preview**: hover a citation or an internal link (or press `F` and pick one) to see the reference, figure
+  or equation it points to, without leaving your place; `↩` goes there. Works for linked LaTeX PDFs and for journal
+  PDFs without links: citations like `[12]`, `(Powell, 2011)` or `Kahneman and Lovallo (1993)` are looked up in the
+  reference list.
+- **Table of contents** (`t`), **link hints** (`f`) and **page thumbnails** (`T`).
 - **SyncTeX**: `nox main.pdf --forward LINE main.tex` shows where a source line ended up; Shift-click jumps back to the
   source in Neovim (via VimTeX).
 - **Tabs**: PDFs open as tabs of one window (`gt` / `gT` / `3gt`, Ctrl-Tab); drag a tab out for its own window.
@@ -33,11 +37,26 @@ It shares no code with Sioyek; the two can share the same notes scripts.
 ## Requirements
 
 - macOS 13 or later, Apple silicon or Intel
-- Swift 5.9+ (Xcode or the Command Line Tools: `xcode-select --install`)
+- To build from source: Swift 5.9+ (Xcode or the Command Line Tools: `xcode-select --install`)
 - Optional: [`qpdf`](https://qpdf.sourceforge.io) (`brew install qpdf`) — nox uses it to tidy the files it saves
 - Optional: Neovim + VimTeX for SyncTeX, and a notes script for `,q` / `,n` (see below)
 
 ## Install
+
+With [Homebrew](https://brew.sh) (this repository is its own tap):
+
+```sh
+brew tap julianjica/nox https://github.com/julianjica/nox
+brew install --cask --no-quarantine nox
+```
+
+This installs `nox.app` and the `nox` command, from the latest
+[release](https://github.com/julianjica/nox/releases). nox is not notarized by Apple (it is signed ad hoc), hence
+`--no-quarantine`; without it macOS refuses to open it the first time. If you download `nox.zip` from a release
+yourself, run `xattr -dr com.apple.quarantine nox.app` once, or right-click the app → *Open*.
+Upgrade with `brew upgrade --cask --greedy nox`.
+
+From source:
 
 ```sh
 git clone https://github.com/julianjica/nox.git ~/nox
@@ -56,6 +75,7 @@ nox paper.pdf --page 12               # open at page 12
 nox main.pdf --forward 120 main.tex   # SyncTeX: show where line 120 of main.tex ended up
 nox --export paper.pdf [--write]      # highlights and notes as Markdown (--write: into paper.notes.md)
 nox --help                            # all options and keys
+nox --self-test                       # check that this build works
 ```
 
 ## Keys
@@ -74,6 +94,8 @@ Move
   ''                     back to where you were before the last jump (again: forth)
   t                      table of contents (j/k, ↩ go)
   f                      label the links on screen; type one to follow it (Ctrl-o back)
+  F                      label citations / links on screen; type one to preview what it cites (↩ go there)
+  hover                  a citation or link: preview of the reference, figure or equation it points to
 
 Search
   /                      search
@@ -85,7 +107,7 @@ Select text without the mouse
   V                      label the visible lines; pick one to select whole lines
   w / b / e              next word / previous word / end of word
   h j k l                character left / line down / line up / character right
-  f{c} / F{c}            to the next / previous c on the line (t{c} / T{c}: just before it)
+  f{c} / F{c}            to the next / previous c, past the line too (t{c} / T{c}: just before it)
   ; / ,                  repeat the last f F t T / the same backwards
   0 / $                  start / end of the line
   o                      move the other end of the selection
@@ -107,6 +129,7 @@ View
   ,c or F8               dark mode on / off
   ,f                     full screen
   s                      two-page spread on / off
+  T                      page thumbnails on / off (click one to go there)
   y or Cmd-C             copy the selection
 
 Presentation
@@ -194,10 +217,18 @@ these two keys do nothing. Notes saved *inside* the PDF (`a`, `c{a-e}`) need no 
 
 ## Development
 
-- `Sources/nox/` — `DocumentController.swift` (window, keys, highlights, notes, saving, reload, selection),
-  `Presentation.swift`, `NoteEditor.swift`, `NotesList.swift`, `Picker.swift` (sheets), `Overlay.swift` (live highlight
-  drawing), `NoxPage.swift` (dark-mode page drawing), `Keymap.swift` (the key list), `External.swift` (SyncTeX, notes script),
-  `AppDelegate.swift`, `main.swift`
-- `scripts/build.sh` — build and install; `scripts/make-icon.swift` — draws the app icon
-- Testing without the mouse: `nox file.pdf --keys "12G"`, `--search TEXT`, `--note TEXT`, `--pdf-note TEXT`, `--state out.json`
-  (a JSON snapshot of the window), `--snapshot out.png` (a picture of the window)
+- `Sources/nox/` — `DocumentController.swift` (window, keys, highlights, notes, saving, reload, selection, previews),
+  `References.swift` (finding citations and what they point to), `Markdown.swift` (notes), `Presentation.swift`,
+  `NoteEditor.swift`, `NotesList.swift`, `Picker.swift`, `Overlay.swift` (live highlight drawing), `NoxPage.swift`
+  (dark-mode page drawing), `Keymap.swift` (the key list), `Export.swift`, `External.swift` (SyncTeX, notes script),
+  `SelfTest.swift`, `AppDelegate.swift`, `main.swift`
+- `scripts/build.sh` — build and install (`UNIVERSAL=1` for Apple silicon + Intel, `NO_INSTALL=1` to only build);
+  `scripts/make-icon.swift` — draws the app icon
+- Tests: `nox --self-test` checks Markdown, the key list, labels, notes saved in the PDF and the reference finder
+  (on PDFs it generates). It needs no test framework, so it runs with just the Command Line Tools.
+  GitHub Actions runs it on every push (`.github/workflows/ci.yml`).
+- Releases: push a tag such as `v0.2.0`; `.github/workflows/release.yml` builds a universal `nox.app`, runs the
+  self-test and publishes `nox.zip` as a GitHub release, which the Homebrew cask (`Casks/nox.rb`) installs.
+- Testing without the mouse: `nox file.pdf --keys "12G"`, `--search TEXT`, `--note TEXT`, `--pdf-note TEXT`,
+  `--type TEXT` / `--close-note done|discard` (an open note), `--state out.json` (a JSON snapshot of the window),
+  `--snapshot out.png` (a picture of the window and any popover)
