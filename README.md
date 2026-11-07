@@ -15,8 +15,11 @@ It shares no code with Sioyek; the two can share the same notes scripts.
 - **Dark mode for pages**: white paper becomes near-black, black ink becomes light; `,c` (or F8) toggles.
   Colors can be changed in `~/.config/nox/theme.json` (see [Colors](#colors)).
 - **Highlights and notes saved in the PDF** as standard annotations, so Preview, Acrobat, Zotero and Skim see them too.
-  Five highlight colors, notes on highlights, sticky notes, a list of all of them (`gn`).
-- **Select text without the mouse** (`v`): every visible line gets a label; type one, then extend by word or line.
+  Five highlight colors (`ca`–`ce`), notes on highlights (`a`), sticky notes, a note on the whole PDF (`A`), and a list
+  of all of them (`gn`). The note editor opens next to the text, never on top of it.
+- **Select text without the mouse** (`v`): every visible line gets a label; type one, then the label of the word to
+  start at, then extend with Vim motions (`h j k l`, `w b e`, `0 $`, `f F t T ; ,`, `o`). `V` selects whole lines.
+  Works in two-column papers too.
 - **Presentation mode** (`p`): full-screen slides, presenter view (current and next slide, timer, clock) on the laptop
   when a second display is connected; works with presentation clickers.
 - **Table of contents** (`t`) and **link hints** (`f`): follow citations and references from the keyboard.
@@ -25,7 +28,7 @@ It shares no code with Sioyek; the two can share the same notes scripts.
 - **Tabs**: PDFs open as tabs of one window (`gt` / `gT` / `3gt`, Ctrl-Tab); drag a tab out for its own window.
 - **Vim marks**: `ma` / `'a` per PDF and kept across sessions, `mA` / `'A` across files, `''` back to before the last jump.
 - **Auto-reload** when the file changes (LaTeX recompiles), keeping your place. Each PDF reopens where you left it.
-- `?` shows every key; after a prefix key (`h`, `g`, `,` …) the status bar lists what can follow.
+- `?` shows every key; after a prefix key (`c`, `g`, `,` …) the status bar lists what can follow.
 
 ## Requirements
 
@@ -78,17 +81,20 @@ Search
   Esc                    clear search highlights
 
 Select text without the mouse
-  v                      label every visible line; type a label to start there (or start at the search match)
-  V                      same, selecting whole lines
+  v                      label the visible lines; pick one, then pick the word to start at (or start at the search match)
+  V                      label the visible lines; pick one to select whole lines
   w / b / e              next word / previous word / end of word
-  j / k                  line down / up
+  h j k l                character left / line down / line up / character right
+  f{c} / F{c}            to the next / previous c on the line (t{c} / T{c}: just before it)
+  ; / ,                  repeat the last f F t T / the same backwards
   0 / $                  start / end of the line
   o                      move the other end of the selection
-  then                   ha–he highlight · a note · y copy · ,q quote · Esc cancel
+  then                   ca–ce highlight · a note · y copy · ,q quote · Esc cancel
 
 Highlights and notes (saved in the PDF)
-  h{a-e}                 highlight the selection: a yellow, b green, c cyan, d pink, e orange
+  c{a-e}                 highlight (color) the selection: a yellow, b green, c cyan, d pink, e orange
   a                      note on the selection, or a sticky note where you last clicked
+  A                      note on the whole PDF (first in gn and the export; empty deletes it)
   e                      edit the note you last clicked
   dh                     delete the highlight / note you last clicked
   gn                     list all highlights and notes (↩ go, e edit, d delete)
@@ -125,6 +131,8 @@ Files and tabs
 ## How notes are stored
 
 - A note on a highlight is the highlight's comment; a sticky note is a PDF "text" annotation.
+- The note on the whole PDF (`A`) is a text annotation in the top-left corner of the first page, marked by its
+  subject `nox: note on the whole PDF`, so other PDF apps show it as an ordinary note.
 - When saving, nox rebuilds the file from the copy on disk and replaces annotations only on the pages you changed,
   so the recolored display never reaches the file. The result is cleaned with `qpdf` when available and replaces
   the original only once fully written. If the file changed on disk in the meantime, nox refuses to save and asks
@@ -164,7 +172,7 @@ keys (hex colors); missing keys keep their defaults:
 ```
 
 `background` is the page paper and `foreground` the ink in dark mode; `highlight_a` … `highlight_e` are the colors of
-`ha` … `he`. Restart nox after editing.
+`ca` … `ce`. Restart nox after editing.
 
 ## Using it from VimTeX
 
@@ -182,7 +190,7 @@ Shift-click in nox runs `nvim --headless -c "VimtexInverseSearch …"`, which ju
 
 `,q` sends the selected text and `,n` opens a `<file>.notes.md` next to the PDF, through the script
 `~/.config/sioyek/scripts/pdfnotes.sh` (shared with Sioyek). The script is not part of this repository; without it,
-these two keys do nothing. Notes saved *inside* the PDF (`a`, `h{a-e}`) need no script.
+these two keys do nothing. Notes saved *inside* the PDF (`a`, `c{a-e}`) need no script.
 
 ## Development
 
@@ -191,5 +199,5 @@ these two keys do nothing. Notes saved *inside* the PDF (`a`, `h{a-e}`) need no 
   drawing), `NoxPage.swift` (dark-mode page drawing), `Keymap.swift` (the key list), `External.swift` (SyncTeX, notes script),
   `AppDelegate.swift`, `main.swift`
 - `scripts/build.sh` — build and install; `scripts/make-icon.swift` — draws the app icon
-- Testing without the mouse: `nox file.pdf --keys "12G"`, `--search TEXT`, `--note TEXT`, `--state out.json`
+- Testing without the mouse: `nox file.pdf --keys "12G"`, `--search TEXT`, `--note TEXT`, `--pdf-note TEXT`, `--state out.json`
   (a JSON snapshot of the window), `--snapshot out.png` (a picture of the window)

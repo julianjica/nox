@@ -11,7 +11,7 @@ var arguments = Array(CommandLine.arguments.dropFirst())
 func absolutePaths(_ args: [String]) -> [String] {
     let cwd = FileManager.default.currentDirectoryPath
     var result: [String] = [], i = 0
-    let valueCounts = ["--page": 1, "--forward": 2, "--keys": 1, "--search": 1, "--state": 1, "--note": 1, "--click-note": 1, "--right-click-note": 1, "--menu": 1, "--snapshot": 1, "--pick": 1]
+    let valueCounts = ["--page": 1, "--forward": 2, "--keys": 1, "--search": 1, "--state": 1, "--note": 1, "--pdf-note": 1, "--click-note": 1, "--right-click-note": 1, "--menu": 1, "--snapshot": 1, "--pick": 1]
     while i < args.count {
         let arg = args[i]
         if let n = valueCounts[arg] {

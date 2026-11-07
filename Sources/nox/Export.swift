@@ -18,12 +18,33 @@ enum NotesExport {
             .replacingOccurrences(of: "\n", with: " ")
     }
 
-    /// Every highlight and sticky note, in reading order.
+    /// The note on the whole PDF (`A`) is a text annotation on the first page marked by its subject,
+    /// a standard field that survives saving (PDFKit drops annotation names) and that other apps show.
+    static let documentNoteSubject = "nox: note on the whole PDF"
+    private static let subjectKey = PDFAnnotationKey(rawValue: "/Subj")
+
+    static func isDocumentNote(_ annotation: PDFAnnotation) -> Bool {
+        annotation.type == "Text" && annotation.value(forAnnotationKey: subjectKey) as? String == documentNoteSubject
+    }
+
+    static func markAsDocumentNote(_ annotation: PDFAnnotation) {
+        annotation.setValue(documentNoteSubject, forAnnotationKey: subjectKey)
+    }
+
+    static func documentNote(in document: PDFDocument) -> (annotation: PDFAnnotation, page: PDFPage)? {
+        guard let page = document.page(at: 0), let note = page.annotations.first(where: isDocumentNote) else { return nil }
+        return (note, page)
+    }
+
+    /// Every highlight and sticky note, in reading order (the note on the whole PDF first).
     static func entries(in document: PDFDocument) -> [NoteEntry] {
         var result: [NoteEntry] = []
+        if let (note, page) = documentNote(in: document) {
+            result.append(NoteEntry(annotation: note, page: page, pageIndex: 0, quote: ""))
+        }
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            let found = page.annotations.filter { $0.type == "Highlight" || $0.type == "Text" }
+            let found = page.annotations.filter { ($0.type == "Highlight" || $0.type == "Text") && !isDocumentNote($0) }
                 .sorted { $0.bounds.maxY > $1.bounds.maxY }
             for annotation in found {
                 let text = annotation.type == "Highlight" ? quote(of: annotation, on: page) : ""
@@ -46,7 +67,9 @@ enum NotesExport {
         for entry in items {
             let page = entry.pageIndex + 1
             let link = "[\(stem), p. \(page)](<sioyek://\(pdf.path)#\(page)>)"
-            if entry.isSticky {
+            if entry.isDocumentNote {
+                lines.append("**About this PDF**")
+            } else if entry.isSticky {
                 lines.append("**Note** — \(link)")
             } else {
                 lines.append("> \(entry.quote.isEmpty ? "…" : entry.quote)")

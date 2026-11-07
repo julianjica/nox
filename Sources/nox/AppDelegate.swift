@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Arguments: [--page N] [--forward LINE TEXFILE] [--search TEXT] [--keys KEYS] [--state OUT] file.pdf
     func handle(arguments: [String]) {
         var page: Int?, forward: (Int, String)?, keys: String?, query: String?, stateFile: String?, file: String?
-        var note: String?, clickNote: (Int, Bool)?, menu: String?, snapshot: String?, pick: Int?
+        var note: String?, pdfNote: String?, clickNote: (Int, Bool)?, menu: String?, snapshot: String?, pick: Int?
         var i = 0
         while i < arguments.count {
             let arg = arguments[i]
@@ -62,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu = arguments[i + 1]; i += 1
             case "--note" where i + 1 < arguments.count:
                 note = arguments[i + 1]; i += 1
+            case "--pdf-note" where i + 1 < arguments.count:
+                pdfNote = arguments[i + 1]; i += 1
             case "--state" where i + 1 < arguments.count:
                 stateFile = arguments[i + 1]; i += 1
             default:
@@ -80,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let query { controller.search(query) }
             if let keys { controller.type(keys) }
             if let note { controller.annotate(note: note) }
+            if let pdfNote { controller.editDocumentNote(note: pdfNote) }
             if let clickNote { controller.clickNote(clickNote.0, right: clickNote.1) }
             if let menu { controller.menuAction(menu) }
             if let pick { controller.pickRow(pick) }

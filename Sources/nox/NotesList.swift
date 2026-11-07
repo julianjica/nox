@@ -9,6 +9,7 @@ struct NoteEntry {
     var note: String { annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
     let quote: String
     var isSticky: Bool { annotation.type == "Text" }
+    var isDocumentNote: Bool { NotesExport.isDocumentNote(annotation) }
 }
 
 /// A table that hands its keys to the list first (j/k, Return, e, d, Esc, q).
@@ -23,7 +24,7 @@ final class KeyTable: NSTableView {
 final class NotesList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let sheet: NSWindow
     private let table = KeyTable()
-    private let empty = NSTextField(labelWithString: "No highlights or notes yet.  Select text and press a (note) or h{a-e} (highlight).")
+    private let empty = NSTextField(labelWithString: "No highlights or notes yet.  Select text and press a (note) or c{a-e} (highlight); A notes the whole PDF.")
     private var entries: [NoteEntry]
     var onJump: ((NoteEntry) -> Void)?
     var onEdit: ((NoteEntry) -> Void)?
@@ -149,7 +150,7 @@ final class NotesList: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             text.append(NSAttributedString(string: s, attributes: [.foregroundColor: color, .font: font]))
         }
         add(entry.isSticky ? "✎ " : "● ", entry.isSticky ? Theme.accent : entry.annotation.color.withAlphaComponent(1), body)
-        add("p. \(entry.pageIndex + 1)   ", Theme.comment, small)
+        add(entry.isDocumentNote ? "whole PDF   " : "p. \(entry.pageIndex + 1)   ", Theme.comment, small)
         if !entry.note.isEmpty { add(entry.note.replacingOccurrences(of: "\n", with: " "), Theme.foreground, .boldSystemFont(ofSize: 13)) }
         if !entry.quote.isEmpty {
             if !entry.note.isEmpty { add("\n", Theme.comment, small) }

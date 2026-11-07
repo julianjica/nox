@@ -13,7 +13,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     private let input = NSTextField()
     private var inputMode = InputMode.none
 
-    private var pending = ""      // multi-key prefix such as "g", "h", ","
+    private var pending = ""      // multi-key prefix such as "g", "c", ","
     private var count = ""        // numeric prefix such as "12" in 12G
     private var searchResults: [PDFSelection] = []
     private var searchIndex = 0
@@ -34,10 +34,16 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// Keyboard selection ("visual mode"): character positions on a page's text.
     struct TextPos: Equatable { var page: Int; var index: Int }
     private var visual: (anchor: TextPos, head: TextPos)?
+    /// Visual mode: the selection before a `,` move (find backwards), restored if the key turns out to start ,q ,c ….
+    private var tentative: (anchor: TextPos, head: TextPos)?
+    /// The last f / F / t / T, for ; and ,
+    private var lastFind: (char: unichar, forward: Bool, till: Bool)?
     private var hints: [String: TextPos] = [:]
     private var hintViews: [NSView] = []
     private var hintTyped = ""
     private var hintLinewise = false
+    /// Second step of `v`: the labels are on the words of the chosen line.
+    private var hintWords = false
     private var linkHints: [String: (annotation: PDFAnnotation, page: PDFPage)] = [:]
     var presentation: PresentationController?
     private var picker: PickerSheet?
@@ -187,7 +193,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         let click = (page: page, point: pdfView.convert(point, to: page))
         lastClick = click
         if shift { inverseSearch(); return true }
-        guard window.attachedSheet == nil, let annotation = noteAnnotation(at: click) else { return false }
+        guard window.attachedSheet == nil, editor == nil, let annotation = noteAnnotation(at: click) else { return false }
         if annotation.type == "Text" {           // sticky note: open it
             editNote(annotation, on: page)
             return true
@@ -327,8 +333,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         var parts = ["\(number)/\(doc.pageCount)", "\(zoom)%"]
         if visual != nil { parts.insert("-- VISUAL --", at: 0) }
         if !linkHints.isEmpty { parts.insert("-- pick a link --", at: 0) }
-        if !hints.isEmpty { parts.insert(hintLinewise ? "-- pick a line (whole lines) --" : "-- pick a line --", at: 0) }
+        if !hints.isEmpty { parts.insert(hintWords ? "-- pick a word --" : hintLinewise ? "-- pick a line (whole lines) --" : "-- pick a line --", at: 0) }
         if !Theme.recolor { parts.append("original colors") }
+        if NotesExport.documentNote(in: doc) != nil { parts.append("✎ PDF note (A)") }
         let keys = count + pending
         if !keys.isEmpty { parts.append(keys) }
         statusLabel.stringValue = parts.joined(separator: "   ")
@@ -341,14 +348,14 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     // MARK: - Keys
 
-    private static let prefixes: Set<String> = ["g", "h", "d", "m", "'", "`", ","]
+    private static let prefixes: Set<String> = ["g", "c", "d", "m", "'", "`", ","]
 
     /// Returns true when the key was handled.
     func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { return false }
         if event.keyCode == 53 {  // Esc
-            pending = ""; count = ""
+            pending = ""; count = ""; tentative = nil
             if !hints.isEmpty || !linkHints.isEmpty || visual != nil {
                 clearHints(); exitVisual(clear: true)
             } else {
@@ -369,7 +376,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return handle(key: key)
     }
 
-    /// Runs a typed key sequence, e.g. "12G" or "ha" (also used by `nox --keys`).
+    /// Runs a typed key sequence, e.g. "12G" or "ca" (also used by `nox --keys`).
     func type(_ keys: String) {
         if let presentation { keys.forEach { presentation.type(String($0)) }; return }
         for key in keys {
@@ -389,11 +396,38 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             updateStatus()
             return true
         }
-        let sequence = pending + key
+        var sequence = pending + key
+        if visual != nil, let before = tentative, !pending.isEmpty {
+            // `,` already moved (repeat find backwards); ,q ,c … take the move back and run instead.
+            tentative = nil
+            let completes = "qcnef".contains(key)
+            if !completes {
+                pending = ""; count = ""; message("")
+                return handle(key: key)
+            }
+            visual = before
+            showVisual()
+        } else if visual != nil, pending.isEmpty, key == "," {
+            let times = Int(count) ?? 1
+            let before = visual
+            _ = performVisual("rev", times: times)
+            tentative = before
+            pending = key; count = ""
+            message(Keymap.continuations[key] ?? "")
+            updateStatus()
+            return true
+        } else if visual != nil, pending.isEmpty, "fFtT".contains(key) {
+            pending = key
+            message("\(key) + a character: \(key == "f" || key == "t" ? "forward" : "backward") on this line to \(key.lowercased() == "f" ? "it" : "just before it")   ; repeat   , back")
+            updateStatus()
+            return true
+        }
+        if visual != nil, sequence.count == 2, "fFtT".contains(sequence.prefix(1)) { message("") }
+        sequence = pending + key
         if pending.isEmpty, Self.prefixes.contains(sequence) {
             pending = sequence
             message(sequence == "'" || sequence == "`" ? marksSummary()
-                    : visual != nil && sequence == "h" ? Keymap.continuations["h"]! : Keymap.continuations[sequence] ?? "")
+                    : Keymap.continuations[sequence] ?? "")
             updateStatus()
             return true
         }
@@ -445,6 +479,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "V": startVisual(linewise: true)
         case "dh": deleteHighlight()
         case "a": annotate()
+        case "A": editDocumentNote()
         case "e": editNoteUnderClick()
         case "gn": showNotesList()
         case ",c": toggleColors()
@@ -455,7 +490,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         default:
             if sequence.count == 2, let mode = sequence.first, let letter = sequence.last {
                 switch mode {
-                case "h": highlight(letter); return true
+                case "c": highlight(letter); return true
                 case "m": setMark(letter); return true
                 case "'", "`": jumpToMark(letter); return true
                 default: break
@@ -777,7 +812,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                 self.save(saying: note.isEmpty ? "highlighted" : "note saved in the PDF")
             }
             if let given { apply(given) } else {
-                openEditor(heading: "Note on highlight", quote: quote, text: "") { if let t = $0 { apply(t) } }
+                openEditor(heading: "Note on highlight", quote: quote, text: "", near: viewRect(of: selection)) { if let t = $0 { apply(t) } }
             }
             return
         }
@@ -796,9 +831,46 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             self.save(saying: "note saved in the PDF")
         }
         if let given { apply(given) } else {
-            openEditor(heading: "Note on page \((document?.index(for: page) ?? 0) + 1)", quote: nil, text: "") {
+            openEditor(heading: "Note on page \((document?.index(for: page) ?? 0) + 1)", quote: nil, text: "",
+                       near: pdfView.convert(NSRect(x: point.x, y: point.y - 20, width: 20, height: 20), from: page)) {
                 if let t = $0 { apply(t) }
             }
+        }
+    }
+
+    /// `A`: the note on the whole PDF: kept inside it (a note in the first page's corner),
+    /// listed first in `gn` and in the export. Saving it empty deletes it.
+    func editDocumentNote(note given: String? = nil) {
+        guard let doc = document, let first = doc.page(at: 0) else { return }
+        let existing = NotesExport.documentNote(in: doc)
+        let apply: (String) -> Void = { [weak self] text in
+            guard let self else { return }
+            let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let (annotation, page) = existing {
+                if note.isEmpty {
+                    self.change(.remove(annotation, page))
+                    self.save(saying: "PDF note deleted")
+                } else if note != annotation.contents {
+                    self.change(.contents(annotation, page, old: annotation.contents, new: note))
+                    self.save(saying: "PDF note saved")
+                }
+            } else if !note.isEmpty {
+                let box = first.bounds(for: .cropBox)
+                let annotation = PDFAnnotation(bounds: NSRect(x: box.minX + 6, y: box.maxY - 26, width: 20, height: 20),
+                                               forType: .text, withProperties: nil)
+                annotation.iconType = .note
+                annotation.color = Theme.highlightColors["a"]!
+                annotation.userName = "nox"
+                annotation.contents = note
+                NotesExport.markAsDocumentNote(annotation)
+                self.change(.add(annotation, first))
+                self.save(saying: "PDF note saved")
+            }
+            self.updateStatus()
+        }
+        if let given { apply(given); return }
+        openEditor(heading: "Note on this PDF", quote: nil, text: existing?.annotation.contents ?? "", near: .null) {
+            if let t = $0 { apply(t) }
         }
     }
 
@@ -810,15 +882,25 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return (page, NSPoint(x: box.minX + 24, y: min(dest.point.y - 24, box.maxY - 24)))
     }
 
-    private func openEditor(heading: String, quote: String?, text: String, done: @escaping (String?) -> Void) {
-        guard window.attachedSheet == nil else { return }
+    /// Where a selection is on screen (its part on the first page shown).
+    private func viewRect(of selection: PDFSelection) -> NSRect {
+        let pages = selection.pages
+        let page = pages.first { pdfView.visiblePages.contains($0) } ?? pages.first
+        guard let page else { return .null }
+        let r = selection.bounds(for: page)
+        return r.minX.isFinite && r.minY.isFinite ? pdfView.convert(r, from: page) : .null
+    }
+
+    private func openEditor(heading: String, quote: String?, text: String, near rect: NSRect,
+                            done: @escaping (String?) -> Void) {
+        guard window.attachedSheet == nil, editor == nil else { return }
         let editor = NoteEditor(heading: heading, quote: quote, text: text) { [weak self] result in
             self?.editor = nil
             self?.window.makeFirstResponder(self?.pdfView)
             done(result)
         }
         self.editor = editor
-        editor.show(on: window)
+        editor.show(next: rect, in: pdfView)
     }
 
     /// The highlight or sticky note under a click, topmost first.
@@ -840,8 +922,13 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     private func editNote(_ annotation: PDFAnnotation, on page: PDFPage) {
         let quote = annotation.type == "Highlight" ? quoteText(of: annotation, on: page) : nil
-        let heading = annotation.type == "Text" ? "Note on page \((document?.index(for: page) ?? 0) + 1)" : "Note on highlight"
-        openEditor(heading: heading, quote: quote, text: annotation.contents ?? "") { [weak self] result in
+        let heading = NotesExport.isDocumentNote(annotation) ? "Note on this PDF"
+            : annotation.type == "Text" ? "Note on page \((document?.index(for: page) ?? 0) + 1)" : "Note on highlight"
+        let rect = annotation.type == "Highlight"
+            ? NoxPage.highlightRects(annotation).map { pdfView.convert($0, from: page) }
+                .reduce(NSRect.null) { $0.union($1) }
+            : pdfView.convert(annotation.bounds, from: page)
+        openEditor(heading: heading, quote: quote, text: annotation.contents ?? "", near: rect) { [weak self] result in
             guard let self, let result else { return }
             let note = result.trimmingCharacters(in: .whitespacesAndNewlines)
             if note.isEmpty && annotation.type == "Text" {
@@ -1096,7 +1183,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         if !linewise, let selection = pdfView.currentSelection, selectedText != nil, let range = textRange(of: selection) {
             visual = range
             showVisual()
-            message("w b e  j k  0 $  o  ·  ha–he highlight  a note  y copy  Esc cancel")
+            message("h j k l  w b e  0 $  f t ; ,  o  ·  ca–ce highlight  a note  y copy  Esc cancel")
             return
         }
         showHints(linewise: linewise)
@@ -1134,6 +1221,33 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         updateStatus()
     }
 
+    /// Second step of `v`: label every word of the chosen line. False when there is nothing to choose.
+    private func showWordHints(on pos: TextPos) -> Bool {
+        guard let doc = document, let page = doc.page(at: pos.page), let n = lineNumber(pos) else { return false }
+        let line = lines(pos.page)[n], s = text(pos.page)
+        let last = min(line.end, s.length - 1)
+        var targets: [(TextPos, NSRect)] = []
+        var i = line.start
+        while i <= last {
+            while i <= last, isSpace(s.character(at: i)) { i += 1 }
+            guard i <= last else { break }
+            let start = i
+            while i <= last, !isSpace(s.character(at: i)) { i += 1 }
+            let rect = textRect(page, NSRange(location: start, length: i - start))
+            // PDFKit's character range for a line can spill into its neighbours: keep only words on it.
+            if rect.width > 0, rect.minX.isFinite, abs(rect.midY - line.rect.midY) < line.rect.height / 2 {
+                targets.append((TextPos(page: pos.page, index: start), pdfView.convert(rect, from: page)))
+            }
+        }
+        targets.sort { $0.1.minX < $1.1.minX }
+        guard targets.count > 1 else { return false }
+        for ((p, _), label) in zip(targets, placeTags(at: targets.map { $0.1 }, leftOf: false, above: true)) { hints[label] = p }
+        hintWords = true
+        hintLinewise = false
+        message("type a word's label to start there  ·  Esc cancel")
+        return true
+    }
+
     private static func hintLabels(_ count: Int) -> [String] {
         let alphabet = Array("asdfjklghqwertyuiopzxcvbnm").map(String.init)
         return count <= alphabet.count ? Array(alphabet.prefix(count))
@@ -1141,12 +1255,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     }
 
     /// Draws a yellow label for each rectangle (view coordinates) and returns the labels.
-    private func placeTags(at rects: [NSRect], leftOf: Bool) -> [String] {
+    private func placeTags(at rects: [NSRect], leftOf: Bool, above: Bool = false) -> [String] {
         hintTyped = ""
         let labels = Self.hintLabels(rects.count)
         for (rect, label) in zip(rects, labels) {
             let tag = NSTextField(labelWithString: label)
-            tag.font = .monospacedSystemFont(ofSize: 13, weight: .bold)
+            tag.font = .monospacedSystemFont(ofSize: above ? 11 : 13, weight: .bold)
             tag.textColor = Theme.darker
             tag.drawsBackground = true
             tag.backgroundColor = Theme.highlightColors["a"]!
@@ -1154,9 +1268,20 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             tag.layer?.cornerRadius = 3
             tag.stringValue = " \(label) "
             tag.sizeToFit()
-            tag.frame.origin = leftOf
+            tag.frame.origin = above
+                ? NSPoint(x: rect.minX, y: pdfView.isFlipped ? rect.minY - tag.frame.height : rect.maxY)
+                : leftOf
                 ? NSPoint(x: max(2, rect.minX - tag.frame.width - 4), y: rect.midY - tag.frame.height / 2)
                 : NSPoint(x: rect.minX, y: rect.maxY - tag.frame.height / 2)
+            if leftOf && !above {
+                // Two columns: a label left of a right-column line would cover the end of the line beside it.
+                // Then it goes after the line, unless that covers text too.
+                let covers = { (frame: NSRect) in rects.contains { $0 != rect && $0.insetBy(dx: 0, dy: 2).intersects(frame) } }
+                if covers(tag.frame) {
+                    let right = NSRect(origin: NSPoint(x: rect.maxX + 4, y: tag.frame.minY), size: tag.frame.size)
+                    if !covers(right) && right.maxX <= pdfView.bounds.maxX - 2 { tag.frame = right }
+                }
+            }
             pdfView.addSubview(tag)
             hintViews.append(tag)
         }
@@ -1286,8 +1411,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         }
         let matches = hints.filter { $0.key.hasPrefix(hintTyped) }
         if let pos = hints[hintTyped] {
-            let linewise = hintLinewise
+            let linewise = hintLinewise, words = hintWords
             clearHints()
+            if !linewise && !words && showWordHints(on: pos) {
+                updateStatus()
+                return
+            }
             if linewise {
                 visual = (TextPos(page: pos.page, index: lineStart(pos)), TextPos(page: pos.page, index: lineEnd(pos)))
             } else {
@@ -1295,7 +1424,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                 visual = (pos, end)
             }
             showVisual()
-            message("w b e  j k  0 $  o  ·  ha–he highlight  a note  y copy  Esc cancel")
+            message("h j k l  w b e  0 $  f t ; ,  o  ·  ca–ce highlight  a note  y copy  Esc cancel")
         } else if matches.isEmpty {
             clearHints()
             message("no such label", error: true)
@@ -1317,11 +1446,13 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         hintViews.forEach { $0.removeFromSuperview() }
         hintViews = []
         hints = [:]
+        hintWords = false
         linkHints = [:]
         hintTyped = ""
     }
 
     private func exitVisual(clear: Bool) {
+        tentative = nil
         guard visual != nil else { return }
         visual = nil
         if clear { pdfView.clearSelection() }
@@ -1338,6 +1469,17 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "e": repeatMove { self.wordEnd(TextPos(page: $0.page, index: $0.index + 1)) }
         case "j": repeatMove { self.verticalMove($0, down: true) }
         case "k": repeatMove { self.verticalMove($0, down: false) }
+        case "h": repeatMove { self.characterMove($0, by: -1) }
+        case "l": repeatMove { self.characterMove($0, by: 1) }
+        case ";", "rev":
+            guard let last = lastFind else { return true }
+            let forward = sequence == ";" ? last.forward : !last.forward
+            repeatMove { self.find(last.char, from: $0, forward: forward, till: last.till, again: true) }
+        case _ where sequence.count == 2 && "fFtT".contains(sequence.prefix(1)):
+            guard let c = sequence.dropFirst().utf16.first else { return true }
+            let kind = sequence.first!
+            lastFind = (c, kind == "f" || kind == "t", kind == "t" || kind == "T")
+            repeatMove { self.find(c, from: $0, forward: kind == "f" || kind == "t", till: kind == "t" || kind == "T", again: false) }
         case "0": head = TextPos(page: head.page, index: lineStart(head))
         case "$": head = TextPos(page: head.page, index: lineEnd(head))
         case "o": swap(&anchor, &head)
@@ -1346,7 +1488,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "a": annotate(); visual = nil; return true
         case ",q": quoteSelection(); exitVisual(clear: true); return true
         default:
-            if sequence.count == 2, sequence.first == "h", let letter = sequence.last {
+            if sequence.count == 2, sequence.first == "c", let letter = sequence.last {
                 highlight(letter)
                 visual = nil
                 return true
@@ -1366,7 +1508,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         pdfView.setCurrentSelection(selection, animate: false)
         // keep the moving end on screen
         if let page = doc.page(at: head.page) {
-            let r = page.characterBounds(at: head.index)
+            let r = textRect(page, NSRange(location: head.index, length: 1))
             let inView = pdfView.convert(r, from: page)
             if !pdfView.bounds.insetBy(dx: 0, dy: 30).contains(inView) {
                 pdfView.go(to: PDFDestination(page: page, at: NSPoint(x: page.bounds(for: .mediaBox).minX, y: r.maxY + visibleHeight / 3 / max(pdfView.scaleFactor, 0.1))))
@@ -1432,6 +1574,30 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return i
     }
 
+    /// h / l: one character left / right, staying on the line (as in Vim).
+    private func characterMove(_ p: TextPos, by step: Int) -> TextPos {
+        guard let n = lineNumber(p) else { return p }
+        let line = lines(p.page)[n]
+        let s = text(p.page)
+        let i = min(max(p.index + step, line.start), min(line.end, s.length - 1))
+        return TextPos(page: p.page, index: max(i, 0))
+    }
+
+    /// f / F / t / T: the next / previous `c` on the line (t / T: the character next to it).
+    /// `again` (for ; and ,) skips a match right next to the cursor, so repeated t moves on.
+    private func find(_ c: unichar, from p: TextPos, forward: Bool, till: Bool, again: Bool) -> TextPos {
+        guard let n = lineNumber(p) else { return p }
+        let line = lines(p.page)[n], s = text(p.page)
+        let last = min(line.end, s.length - 1)
+        var i = p.index + (forward ? 1 : -1)
+        if till && again { i += forward ? 1 : -1 }
+        while i >= line.start && i <= last {
+            if s.character(at: i) == c { return TextPos(page: p.page, index: till ? i + (forward ? -1 : 1) : i) }
+            i += forward ? 1 : -1
+        }
+        return p
+    }
+
     /// j / k: the line below / above, keeping the horizontal position.
     private func verticalMove(_ p: TextPos, down: Bool) -> TextPos {
         guard let doc = document, let page = doc.page(at: p.page), let n = lineNumber(p) else { return p }
@@ -1443,14 +1609,28 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         }
         let line = lines(target.page)[target.line]
         guard let targetPage = doc.page(at: target.page) else { return p }
-        let x = page.characterBounds(at: p.index).midX
-        let hit = targetPage.characterIndex(at: NSPoint(x: x, y: line.rect.midY))
-        if hit >= line.start && hit <= line.end,
-           abs(targetPage.characterBounds(at: hit).midX - x) < max(line.rect.height, 12) {
-            return TextPos(page: target.page, index: hit)
+        let x = textRect(page, NSRange(location: p.index, length: 1)).midX
+        // The character on the target line closest to the same horizontal position.
+        var best: (index: Int, distance: CGFloat)?
+        let s = text(target.page)
+        for i in line.start...min(line.end, s.length - 1) where !isSpace(s.character(at: i)) {
+            let r = textRect(targetPage, NSRange(location: i, length: 1))
+            guard r.width > 0, r.midX.isFinite else { continue }
+            let d = abs(r.midX - x)
+            if best == nil || d < best!.distance { best = (i, d) }
         }
+        if let best { return TextPos(page: target.page, index: best.index) }
         let probe = TextPos(page: target.page, index: line.start)
         return TextPos(page: target.page, index: x < line.rect.midX ? lineStart(probe) : lineEnd(probe))
+    }
+
+    /// Where a stretch of a page's text is on the page. PDFPage.characterBounds(at:) and
+    /// characterIndex(at:) disagree with the page's text on some PDFs (journal papers, two
+    /// columns), so the geometry comes from a selection of the same characters instead.
+    private func textRect(_ page: PDFPage, _ range: NSRange) -> NSRect {
+        guard range.length > 0, let r = page.selection(for: range)?.bounds(for: page),
+              r.minX.isFinite, r.minY.isFinite else { return .null }
+        return r
     }
 
     // MARK: - Colors
@@ -1677,7 +1857,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                                   [.boundsIgnoreFraming, .bestResolution]) else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
-        if let sheet = window.attachedSheet,
+        if let sheet = window.attachedSheet ?? editor?.window,
            let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(sheet.windowNumber), [.boundsIgnoreFraming, .bestResolution]) {
             try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
                 .write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-sheet.png")))
@@ -1693,7 +1873,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                               "note": $0.note, "quote": $0.quote,
                                               "rects": NoxPage.highlightRects($0.annotation).count,
                                               "screen": screenPoint(of: $0)] },
-                "sheet": window.attachedSheet != nil,
+                "sheet": window.attachedSheet != nil, "editor": editor != nil,
                 "popover": popover?.isShown ?? false,
                 "tabs": window.tabbedWindows?.count ?? 1, "tabIndex": (window.tabbedWindows?.firstIndex { $0 === window } ?? 0) + 1,
                 "visual": visual != nil, "hints": hints.count, "links": linkHints.count,

@@ -1,18 +1,19 @@
 import AppKit
 
-/// A small sheet for writing or editing a note. Cmd-Return saves, Esc cancels.
-final class NoteEditor: NSObject, NSTextViewDelegate {
-    let sheet: NSWindow
+/// A small popover for writing or editing a note, placed next to the text it belongs to
+/// (above or below, never on top of it). Cmd-Return saves, Esc cancels.
+final class NoteEditor: NSObject, NSTextViewDelegate, NSPopoverDelegate {
+    private let popover = NSPopover()
     private let textView = NSTextView()
     private var done: ((String?) -> Void)?
 
     init(heading: String, quote: String?, text: String, done: @escaping (String?) -> Void) {
-        sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
-                         styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         self.done = done
         super.init()
-        sheet.appearance = NSAppearance(named: .darkAqua)
-        sheet.backgroundColor = Theme.background
+        popover.appearance = NSAppearance(named: .darkAqua)
+        popover.behavior = .applicationDefined
+        popover.animates = false
+        popover.delegate = self
 
         let title = NSTextField(labelWithString: heading)
         title.font = .boldSystemFont(ofSize: 13)
@@ -20,16 +21,17 @@ final class NoteEditor: NSObject, NSTextViewDelegate {
 
         let quoteLabel = NSTextField(wrappingLabelWithString: quote.map { "“\($0)”" } ?? "")
         quoteLabel.textColor = Theme.comment
-        quoteLabel.maximumNumberOfLines = 4
+        quoteLabel.maximumNumberOfLines = 2
         quoteLabel.lineBreakMode = .byTruncatingTail
         quoteLabel.isHidden = quote == nil
         quoteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
-        textView.frame = NSRect(x: 0, y: 0, width: 520, height: 160)
+        textView.frame = NSRect(x: 0, y: 0, width: 440, height: 120)
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -63,9 +65,12 @@ final class NoteEditor: NSObject, NSTextViewDelegate {
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 14, right: 20)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        sheet.contentView = NSView()
-        sheet.contentView?.addSubview(stack)
-        let content = sheet.contentView!
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 250))
+        content.addSubview(stack)
+        let controller = NSViewController()
+        controller.view = content
+        popover.contentViewController = controller
+        popover.contentSize = content.frame.size
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: content.topAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -74,15 +79,28 @@ final class NoteEditor: NSObject, NSTextViewDelegate {
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
             buttons.widthAnchor.constraint(equalTo: scroll.widthAnchor),
             quoteLabel.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100),
         ])
     }
 
-    func show(on window: NSWindow) {
-        window.beginSheet(sheet) { _ in }
-        sheet.makeFirstResponder(textView)
+    /// The popover's own window (for snapshots).
+    var window: NSWindow? { popover.contentViewController?.view.window }
+
+    /// Shows the editor next to `rect` (in `view`'s coordinates): below it when there is
+    /// more room below, otherwise above.
+    func show(next rect: NSRect, in view: NSView) {
+        let target = rect.intersection(view.bounds.insetBy(dx: 1, dy: 1)).isNull
+            ? NSRect(x: view.bounds.midX, y: view.bounds.maxY - 40, width: 1, height: 1) : rect
+        let flipped = view.isFlipped
+        let below = flipped ? view.bounds.maxY - target.maxY : target.minY - view.bounds.minY
+        let above = flipped ? target.minY - view.bounds.minY : view.bounds.maxY - target.maxY
+        let downward: NSRectEdge = flipped ? .maxY : .minY, upward: NSRectEdge = flipped ? .minY : .maxY
+        popover.show(relativeTo: target, of: view, preferredEdge: below >= above ? downward : upward)
+        window?.makeFirstResponder(textView)
         textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
     }
+
+    func popoverDidClose(_ notification: Notification) { finish(nil) }
 
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.cancelOperation(_:)) { finish(nil); return true }
@@ -93,9 +111,10 @@ final class NoteEditor: NSObject, NSTextViewDelegate {
     @objc private func savePressed() { finish(textView.string) }
 
     private func finish(_ result: String?) {
-        sheet.sheetParent?.endSheet(sheet)
         let done = self.done
+        guard done != nil else { return }
         self.done = nil
+        popover.close()
         done?(result)
     }
 }
