@@ -181,6 +181,13 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                                name: .PDFViewPageChanged, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(viewChanged),
                                                name: .PDFViewScaleChanged, object: pdfView)
+        NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged),
+                                               name: .PDFViewSelectionChanged, object: pdfView)
+    }
+
+    /// The overlays draw the selection band in dark mode.
+    @objc private func selectionChanged() {
+        if Theme.recolor { overlays.refresh() }
     }
 
     /// Keys and Shift+click are caught here, before PDFKit's own views see them.

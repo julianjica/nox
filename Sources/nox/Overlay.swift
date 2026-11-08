@@ -30,6 +30,18 @@ final class NoteOverlayView: NSView {
                 context.fillEllipse(in: CGRect(x: top.minX - size - 3, y: top.maxY - size, width: size, height: size))
             }
         }
+        // The selection (visual mode, mouse): PDFKit's grey is nearly invisible on a dark page, so
+        // add an accent band in screen mode, which tints the paper and keeps the light text readable.
+        if Theme.recolor, let selection = pdfView.currentSelection, selection.pages.contains(where: { $0 === page }) {
+            context.saveGState()
+            context.setBlendMode(.screen)
+            context.setFillColor(Theme.accent.withAlphaComponent(0.40).cgColor)
+            for line in selection.selectionsByLine() where line.pages.contains(where: { $0 === page }) {
+                let r = line.bounds(for: page)
+                if r.width > 0.5 { context.fill(local(r).insetBy(dx: -1, dy: -1)) }
+            }
+            context.restoreGState()
+        }
     }
 }
 
