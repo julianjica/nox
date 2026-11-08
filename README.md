@@ -21,7 +21,7 @@ It shares no code with Sioyek; the two can share the same notes scripts.
   start at, then extend with Vim motions (`h j k l`, `w b e`, `0 $`, `f F t T ; ,`, `o`). `V` selects whole lines.
   Works in two-column papers too.
 - **Presentation mode** (`p`): full-screen slides, presenter view (current and next slide, timer, clock) on the laptop
-  when a second display is connected; works with presentation clickers.
+  when a second display is connected; `x` swaps the two screens; works with presentation clickers.
 - **Reference preview**: hover a citation or an internal link (or press `F` and pick one) to see the reference, figure
   or equation it points to, without leaving your place; `↩` goes there. Works for linked LaTeX PDFs and for journal
   PDFs without links: citations like `[12]`, `(Powell, 2011)` or `Kahneman and Lovallo (1993)` are looked up in the
@@ -138,6 +138,7 @@ Presentation
   b or .                 blank the screen
   12 ↩                   go to slide 12
   r / t                  restart / pause the timer
+  x                      swap slides and presenter view (switch screens; on one display, show the presenter view)
   Esc or q               stop presenting (back to the slide you were on)
 
 LaTeX and the notes file

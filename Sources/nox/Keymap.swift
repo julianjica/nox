@@ -61,6 +61,7 @@ enum Keymap {
             ("b or .", "blank the screen"),
             ("12 ↩", "go to slide 12"),
             ("r / t", "restart / pause the timer"),
+            ("x", "swap slides and presenter view (switch screens; on one display, show the presenter view)"),
             ("Esc or q", "stop presenting (back to the slide you were on)"),
         ]),
         ("LaTeX and the notes file", [

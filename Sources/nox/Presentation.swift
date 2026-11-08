@@ -29,6 +29,9 @@ final class PresentationController: NSObject {
     private var monitors: [Any] = []
     private var count = "", pending = ""
     private let savedRecolor: Bool
+    private let home: NSScreen
+    private let projector: NSScreen?
+    private var swapped = false
     var onEnd: ((Int) -> Void)?
 
     init(document: PDFDocument, page: Int, from window: NSWindow) {
@@ -37,6 +40,8 @@ final class PresentationController: NSObject {
         savedRecolor = Theme.recolor
         let home = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
         let projector = NSScreen.screens.first { $0 != home }
+        self.home = home
+        self.projector = projector
         let slideScreen = projector ?? home
         slideWindow = KeyWindow(contentRect: slideScreen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         super.init()
@@ -103,7 +108,7 @@ final class PresentationController: NSObject {
             label.textColor = color
             label.translatesAutoresizingMaskIntoConstraints = false
         }
-        let hint = NSTextField(labelWithString: "→ / Space next   ← previous   b blank   12⏎ go to slide   r restart timer   t pause   Esc end")
+        let hint = NSTextField(labelWithString: "→ / Space next   ← previous   b blank   12⏎ go to slide   r restart timer   t pause   x swap views   Esc end")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = Theme.comment
         hint.translatesAutoresizingMaskIntoConstraints = false
@@ -238,8 +243,27 @@ final class PresentationController: NSObject {
             else { paused = Date() }
             tick()
         case ",c": Theme.recolor.toggle(); (NSApp.delegate as? AppDelegate)?.themeChanged(); redraw()
+        case "x": swapViews()
         case "q", "p": end()
         default: break
+        }
+    }
+
+    /// `x`: swap the slides and the presenter view. With two displays they trade screens (for when
+    /// macOS picked the wrong one as the projector); with one display the screen shows one or the other.
+    private func swapViews() {
+        swapped.toggle()
+        if let projector {
+            guard let presenter = presenterWindow else { return }
+            let (slides, notes) = swapped ? (home, projector) : (projector, home)
+            slideWindow.setFrame(slides.frame, display: true)
+            presenter.setFrame(notes.frame, display: true)
+            presenter.makeKeyAndOrderFront(nil)
+            slideWindow.orderFrontRegardless()
+        } else {
+            if presenterWindow == nil { buildPresenter(on: home); show(index); tick() }
+            if swapped { presenterWindow?.makeKeyAndOrderFront(nil) }
+            else { presenterWindow?.orderOut(nil); slideWindow.makeKeyAndOrderFront(nil) }
         }
     }
 
@@ -249,7 +273,8 @@ final class PresentationController: NSObject {
     }
 
     var state: [String: Any] {
-        ["presenting": true, "slide": index + 1, "presenter": presenterWindow != nil, "blank": !blackout.isHidden,
+        ["presenting": true, "slide": index + 1, "presenter": presenterWindow?.isVisible ?? false, "swapped": swapped,
+         "slideScreen": NSScreen.screens.firstIndex { $0.frame == slideWindow.frame } ?? -1, "blank": !blackout.isHidden,
          "timer": timerLabel.stringValue, "recolor": Theme.recolor]
     }
 
