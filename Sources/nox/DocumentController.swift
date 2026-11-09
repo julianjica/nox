@@ -59,7 +59,10 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     var presentation: PresentationController?
     private var picker: PickerSheet?
     private var pageTexts: [Int: NSString] = [:]
-    private var readingOrders: [Int: ReadingOrder?] = [:]   // nil inside: the page's text is in reading order
+    private var readingOrders: [Int: ReadingOrder?] = [:]
+    /// `,2`: how visual mode treats two columns: found automatically, always, or never.
+    enum ColumnMode: String { case auto, on, off }
+    private var columnMode = ColumnMode.auto   // nil inside: the page's text is in reading order
     /// A line as it appears on the page, with its character range in the page's text.
     struct VisualLine { let rect: NSRect; let start: Int; let end: Int }
     private var pageLines: [Int: [VisualLine]] = [:]   // pages whose annotations changed since the last save
@@ -454,7 +457,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         if visual != nil, let before = tentative, !pending.isEmpty {
             // `,` already moved (repeat find backwards); ,q ,c … take the move back and run instead.
             tentative = nil
-            let completes = "qcnef".contains(key)
+            let completes = "qcnef2".contains(key)
             if !completes {
                 pending = ""; count = ""; message("")
                 return handle(key: key)
@@ -543,6 +546,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case ",n": Notes.open(pdf: path); message("opening notes")
         case ",e": exportNotes()
         case ",f": window.toggleFullScreen(nil)
+        case ",2": cycleColumns()
         default:
             if sequence.count == 2, let mode = sequence.first, let letter = sequence.last {
                 switch mode {
@@ -1253,8 +1257,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     // two-column pages whose text runs across the columns (see ReadingOrder).
 
     private func reading(_ page: Int) -> ReadingOrder? {
+        if columnMode == .off { return nil }
         if let cached = readingOrders[page] { return cached }
-        let order = document?.page(at: page).flatMap { ReadingOrder.make(page: $0) }
+        let order = document?.page(at: page).flatMap { ReadingOrder.make(page: $0, force: columnMode == .on) }
         readingOrders[page] = .some(order)
         return order
     }
@@ -1267,6 +1272,29 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         guard let first = parts.first else { return nil }
         parts.dropFirst().forEach { first.add($0) }
         return first
+    }
+
+    /// `,2`: cycles auto → on → off, for when visual mode reads across the columns (or splits a page
+    /// that has none). A selection in progress stays on the same characters.
+    func cycleColumns() {
+        func toPDF(_ p: TextPos) -> TextPos {
+            guard let order = reading(p.page), !order.toPDF.isEmpty else { return p }
+            return TextPos(page: p.page, index: order.toPDF[min(max(p.index, 0), order.toPDF.count - 1)])
+        }
+        func fromPDF(_ p: TextPos) -> TextPos {
+            guard let order = reading(p.page), p.index >= 0, p.index < order.fromPDF.count else { return p }
+            return TextPos(page: p.page, index: order.fromPDF[p.index])
+        }
+        let inPDF = visual.map { (toPDF($0.anchor), toPDF($0.head)) }
+        tentative = nil
+        columnMode = columnMode == .auto ? .on : columnMode == .on ? .off : .auto
+        readingOrders = [:]; pageTexts = [:]; pageLines = [:]
+        if let (a, h) = inPDF { visual = (fromPDF(a), fromPDF(h)); showVisual() }
+        switch columnMode {
+        case .auto: message("columns: auto (left column, then right, where the text jumps between them)")
+        case .on: message("columns: on (always the left column, then the right)")
+        case .off: message("columns: off (the PDF's own text order)")
+        }
     }
 
     private func text(_ page: Int) -> NSString {
@@ -1800,6 +1828,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                 selection.add(part)
             }
         }
+        guard !selection.pages.isEmpty else { return }
         pdfView.setCurrentSelection(selection, animate: false)
         // keep the moving end on screen
         if let page = doc.page(at: head.page) {

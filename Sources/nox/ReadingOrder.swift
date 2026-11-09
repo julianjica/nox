@@ -28,15 +28,17 @@ struct ReadingOrder {
         return runs
     }
 
-    static func make(page: PDFPage) -> ReadingOrder? {
+    /// `force` (the `,2` switch set to "on"): take any two columns found, even where the text
+    /// doesn't seem to need it.
+    static func make(page: PDFPage, force: Bool = false) -> ReadingOrder? {
         let s = (page.string ?? "") as NSString
         guard s.length > 0 else { return nil }
         let rects = (0..<s.length).map { page.selection(for: NSRange(location: $0, length: 1))?.bounds(for: page) ?? .null }
-        return make(text: s, rects: rects)
+        return make(text: s, rects: rects, force: force)
     }
 
     /// The layout analysis itself, from each character's rectangle (testable without a PDF).
-    static func make(text s: NSString, rects: [CGRect]) -> ReadingOrder? {
+    static func make(text s: NSString, rects: [CGRect], force: Bool = false) -> ReadingOrder? {
         let n = s.length
         guard n > 0, rects.count == n else { return nil }
         let space = CharacterSet.whitespacesAndNewlines
@@ -106,20 +108,34 @@ struct ReadingOrder {
         // Left-column lines may run a little past the right column's edge; full-width lines run far past it.
         let reach = column + (all.maxX - column) * 0.5
         func side(_ r: CGRect) -> Side { r.minX >= column - 4 ? .right : r.maxX <= reach ? .left : .span }
-        let real = boxes.filter { !$0.isNull }
-        let left = real.filter { side($0) == .left }.count, right = real.filter { side($0) == .right }.count
-        let span = real.count - left - right
-        guard left >= 8, right >= 8, Double(span) < Double(real.count) * 0.25 else { return nil }
-        // Only text that keeps jumping between the columns needs this; a few jumps (running heads,
-        // footnotes) are normal in a PDF that is already in reading order.
-        let sides = segments.indices.filter { !boxes[$0].isNull && segments[$0].filter(ink).count > 1 }
-            .map { side(boxes[$0]) }.filter { $0 != .span }
-        let jumps = zip(sides, sides.dropFirst()).filter { $0 != $1 }.count
-        guard jumps >= 8, Double(jumps) > Double(sides.count) * 0.15 else { return nil }
-
-        // 3. Reading order: top to bottom; between full-width lines, the left column then the right.
         // Lone characters (vertical text in the margin, stray marks) go last, out of the lines' way.
         let lone = Set(segments.indices.filter { !boxes[$0].isNull && segments[$0].filter(ink).count == 1 })
+        let real = segments.indices.filter { !boxes[$0].isNull && !lone.contains($0) }.map { boxes[$0] }
+        let left = real.filter { side($0) == .left }.count, right = real.filter { side($0) == .right }.count
+        let span = real.count - left - right
+        if force { guard left >= 3, right >= 3, Double(span) < Double(real.count) * 0.5 else { return nil } } else {
+        guard left >= 8, right >= 8, Double(span) < Double(real.count) * 0.25 else { return nil }
+        // Real columns: many full lines starting at each column's edge, of similar width
+        // (not centered equations or table cells in a one-column page).
+        func median(_ v: [CGFloat]) -> CGFloat { v.isEmpty ? 0 : v.sorted()[v.count / 2] }
+        var margins: [Int: Int] = [:]
+        for r in real where side(r) == .left { margins[Int((r.minX / 3).rounded()), default: 0] += 1 }
+        guard let margin = margins.max(by: { $0.value < $1.value }).map({ CGFloat($0.key) * 3 }) else { return nil }
+        let leftLines = real.filter { side($0) == .left && abs($0.minX - margin) <= 4 }
+        let rightLines = real.filter { side($0) == .right && $0.minX <= column + 4 }
+        let leftWidth = median(leftLines.map(\.width)), rightWidth = median(rightLines.map(\.width))
+        guard leftLines.count >= 8, rightLines.count >= 8,
+              Double(rightLines.count) >= Double(right) * 0.6,
+              leftWidth >= (column - margin) * 0.75,
+              min(leftWidth, rightWidth) >= max(leftWidth, rightWidth) * 0.7 else { return nil }
+        // Only text that keeps jumping between the columns needs this; a few jumps (running heads,
+        // footnotes) are normal in a PDF that is already in reading order.
+        let sides = real.map(side).filter { $0 != .span }
+        let jumps = zip(sides, sides.dropFirst()).filter { $0 != $1 }.count
+        guard jumps >= 8, Double(jumps) > Double(sides.count) * 0.15 else { return nil }
+        }
+
+        // 3. Reading order: top to bottom; between full-width lines, the left column then the right.
         let order = segments.indices.filter { !boxes[$0].isNull && !lone.contains($0) }.sorted { boxes[$0].midY > boxes[$1].midY }
         var rows: [[Int]] = []
         for i in order {
@@ -164,7 +180,7 @@ struct ReadingOrder {
             if !space.contains(UnicodeScalar(s.character(at: seg.upperBound)) ?? " ") {
                 out.append("\n"); toPDF.append(seg.upperBound)
             }
-            guard !boxes[i].isNull else { continue }
+            guard !boxes[i].isNull, !lone.contains(i) else { continue }   // lone characters aren't lines
             // Pieces of one line in one column, next to each other, make one line.
             if let last = lines.last, last.end == begin - 1, side(last.rect) == side(boxes[i]),
                abs(last.rect.midY - boxes[i].midY) < min(last.rect.height, boxes[i].height) * 0.5 {

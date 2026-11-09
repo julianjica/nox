@@ -51,6 +51,7 @@ enum Keymap {
             ("+ / - / w", "zoom in / out / fit width"),
             (",c or F8", "dark mode on / off"),
             (",f", "full screen"),
+            (",2", "visual mode and two columns: auto / on / off (if a selection runs across the columns)"),
             ("s", "two-page spread on / off"),
             ("T", "page thumbnails on / off (click one to go there)"),
             ("y or Cmd-C", "copy the selection"),
@@ -82,7 +83,7 @@ enum Keymap {
         "c": "ca yellow   cb green   cc cyan   cd pink   ce orange",
         "d": "dh delete the highlight / note you last clicked",
         "m": "m + a letter: set a mark (a–z this PDF, A–Z across files)",
-        ",": ",c dark mode   ,f full screen   ,q quote to notes file   ,n open notes file   ,e export highlights/notes",
+        ",": ",c dark mode   ,f full screen   ,q quote to notes file   ,n open notes file   ,e export highlights/notes   ,2 columns auto/on/off",
     ]
 
     static var plainText: String {

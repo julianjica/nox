@@ -19,7 +19,9 @@ It shares no code with Sioyek; the two can share the same notes scripts.
   of all of them (`gn`). The note editor opens next to the text, never on top of it.
 - **Select text without the mouse** (`v`): every visible line gets a label; type one, then the label of the word to
   start at, then extend with Vim motions (`h j k l`, `w b e`, `0 $`, `f F t T ; ,`, `o`). `V` selects whole lines.
-  Works in two-column papers too.
+  Works in two-column papers too, including scans whose text runs across the columns line by line: nox reads
+  the left column, then the right. If a selection still crosses the columns (or splits a page that has none), `,2`
+  switches column handling between auto, on and off.
 - **Presentation mode** (`p`): full-screen slides, presenter view (current and next slide, timer, clock) on the laptop
   when a second display is connected; `x` swaps the two screens; works with presentation clickers.
 - **Reference preview**: hover a citation or an internal link (or press `F` and pick one) to see the reference, figure
@@ -128,6 +130,7 @@ View
   + / - / w              zoom in / out / fit width
   ,c or F8               dark mode on / off
   ,f                     full screen
+  ,2                     visual mode and two columns: auto / on / off (if a selection runs across the columns)
   s                      two-page spread on / off
   T                      page thumbnails on / off (click one to go there)
   y or Cmd-C             copy the selection
