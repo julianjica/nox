@@ -432,6 +432,13 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
             guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
             return handleControl(key)
         }
+        // Shift-Space: a screen up (Space is a screen down), as in a browser.
+        if event.keyCode == 49, flags.contains(.shift), pending.isEmpty, visual == nil,
+           hints.isEmpty, linkHints.isEmpty, previewHints.isEmpty {
+            count = ""
+            scroll(by: -visibleHeight * 0.9)
+            return true
+        }
         guard let key = event.characters, key.count == 1 else { return false }
         return handle(key: key)
     }

@@ -7,7 +7,7 @@ enum Keymap {
         ("Move", [
             ("j / k", "scroll down / up (counts work: 5j)"),
             ("Ctrl-d / Ctrl-u", "half a screen down / up"),
-            ("Space, Ctrl-f / Ctrl-b", "a screen down / up"),
+            ("Space / Shift-Space", "a screen down / up (Ctrl-f / Ctrl-b too)"),
             ("J / K", "next / previous page"),
             ("gg / G / 12G", "first page / last page / page 12"),
             (":", "go to a page (type its number)"),
