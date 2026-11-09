@@ -157,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showKeys() { frontController?.showHelp() }
     @objc func printFront() { frontController?.printPDF() }
+    @objc func selectTab(_ sender: NSMenuItem) { frontController?.selectTab(sender.tag) }
 
     func themeChanged() {
         controllers.forEach { $0.applyTheme() }
@@ -210,6 +211,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .keyEquivalentModifierMask = [.control]
         windowMenu.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "\t")
             .keyEquivalentModifierMask = [.control, .shift]
+        for n in 1...9 {
+            let item = windowMenu.addItem(withTitle: n == 9 ? "Show Last Tab" : "Show Tab \(n)", action: #selector(selectTab(_:)),
+                                          keyEquivalent: "\(n)")
+            item.target = self
+            item.tag = n
+        }
         windowMenu.addItem(withTitle: "Move Tab to New Window", action: #selector(NSWindow.moveTabToNewWindow(_:)), keyEquivalent: "")
         windowMenu.addItem(withTitle: "Merge All Windows", action: #selector(NSWindow.mergeAllWindows(_:)), keyEquivalent: "")
         windowMenu.addItem(.separator())

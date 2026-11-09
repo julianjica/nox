@@ -76,6 +76,7 @@ enum Keymap {
         ("Files and tabs", [
             ("r / o / q", "reload / open another PDF (in a new tab) / close this tab"),
             ("gt / gT / 3gt", "next tab / previous tab / tab 3 (Ctrl-Tab works too)"),
+            ("Cmd-1 … Cmd-9", "tab 1 … 8 / the last tab"),
             ("?", "this list"),
         ]),
     ]

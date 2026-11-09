@@ -754,6 +754,14 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         tabs[((target % tabs.count) + tabs.count) % tabs.count].makeKeyAndOrderFront(nil)
     }
 
+    /// Cmd-1 … Cmd-8: that tab; Cmd-9: the last tab (as in a browser).
+    func selectTab(_ number: Int) {
+        guard let tabs = window.tabbedWindows, tabs.count > 1 else { return }
+        let index = number >= 9 ? tabs.count - 1 : number - 1
+        guard tabs.indices.contains(index) else { return }
+        tabs[index].makeKeyAndOrderFront(nil)
+    }
+
     /// Call before any jump, so `''` can come back.
     func rememberSpot() {
         if let spot = currentSpot { previousSpot = spot }
