@@ -28,7 +28,6 @@ final class PresentationController: NSObject {
     private var timer: Timer?
     private var monitors: [Any] = []
     private var count = "", pending = ""
-    private let savedRecolor: Bool
     private let home: NSScreen
     private let projector: NSScreen?
     private var swapped = false
@@ -37,7 +36,6 @@ final class PresentationController: NSObject {
     init(document: PDFDocument, page: Int, from window: NSWindow) {
         self.document = document
         index = page
-        savedRecolor = Theme.recolor
         let home = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
         let projector = NSScreen.screens.first { $0 != home }
         self.home = home
@@ -45,9 +43,6 @@ final class PresentationController: NSObject {
         let slideScreen = projector ?? home
         slideWindow = KeyWindow(contentRect: slideScreen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         super.init()
-
-        // The audience sees the slides as designed.
-        if Theme.recolor { Theme.recolor = false; (NSApp.delegate as? AppDelegate)?.themeChanged() }
 
         configure(slideView, background: .black)
         slideWindow.setFrame(slideScreen.frame, display: true)
@@ -108,7 +103,7 @@ final class PresentationController: NSObject {
             label.textColor = color
             label.translatesAutoresizingMaskIntoConstraints = false
         }
-        let hint = NSTextField(labelWithString: "→ / Space next   ← previous   b blank   12⏎ go to slide   r restart timer   t pause   x swap views   Esc end")
+        let hint = NSTextField(labelWithString: "→ / Space next   ← previous   b blank   12⏎ go to slide   r restart timer   t pause   F8 dark mode   x swap views   Esc end")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = Theme.comment
         hint.translatesAutoresizingMaskIntoConstraints = false
@@ -213,6 +208,7 @@ final class PresentationController: NSObject {
         case .leftArrow?, .upArrow?, .pageUp?, .delete?, .backspace?: step(-1); return
         case .home?: show(0); return
         case .end?: show(document.pageCount - 1); return
+        case .f8?: toggleColors(); return
         case .carriageReturn?, .enter?, .newline?:
             if let n = Int(count) { show(n - 1) } else { step(1) }
             count = ""; return
@@ -242,7 +238,7 @@ final class PresentationController: NSObject {
             if let p = paused { started = started.addingTimeInterval(Date().timeIntervalSince(p)); paused = nil }
             else { paused = Date() }
             tick()
-        case ",c": Theme.recolor.toggle(); (NSApp.delegate as? AppDelegate)?.themeChanged(); redraw()
+        case ",c": toggleColors()
         case "x": swapViews()
         case "q", "p": end()
         default: break
@@ -265,6 +261,13 @@ final class PresentationController: NSObject {
             if swapped { presenterWindow?.makeKeyAndOrderFront(nil) }
             else { presenterWindow?.orderOut(nil); slideWindow.makeKeyAndOrderFront(nil) }
         }
+    }
+
+    /// F8 or ,c: dark mode on / off for the slides too (the setting you present with is kept after).
+    private func toggleColors() {
+        Theme.recolor.toggle()
+        (NSApp.delegate as? AppDelegate)?.themeChanged()
+        redraw()
     }
 
     private func step(_ delta: Int) {
@@ -295,7 +298,6 @@ final class PresentationController: NSObject {
         slideWindow.orderOut(nil)
         presenterWindow?.orderOut(nil)
         NSApp.presentationOptions = []
-        if Theme.recolor != savedRecolor { Theme.recolor = savedRecolor; (NSApp.delegate as? AppDelegate)?.themeChanged() }
         onEnd?(index)
         onEnd = nil
     }

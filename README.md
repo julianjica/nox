@@ -140,6 +140,7 @@ Presentation
   p                      present from this page: full screen; presenter view on a second display
   → Space j / ← k        next / previous slide (clickers work); click / right-click too
   b or .                 blank the screen
+  F8 or ,c               dark mode on / off for the slides
   12 ↩                   go to slide 12
   r / t                  restart / pause the timer
   x                      swap slides and presenter view (switch screens; on one display, show the presenter view)
