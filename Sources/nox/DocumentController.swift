@@ -59,6 +59,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     var presentation: PresentationController?
     private var picker: PickerSheet?
     private var pageTexts: [Int: NSString] = [:]
+    private var readingOrders: [Int: ReadingOrder?] = [:]   // nil inside: the page's text is in reading order
     /// A line as it appears on the page, with its character range in the page's text.
     struct VisualLine { let rect: NSRect; let start: Int; let end: Int }
     private var pageLines: [Int: [VisualLine]] = [:]   // pages whose annotations changed since the last save
@@ -788,6 +789,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     // MARK: - Selection, highlights, notes
 
     private var selectedText: String? {
+        if let text = visualText { return text }
         guard let text = pdfView.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
         return text
@@ -1247,8 +1249,29 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
 
     // MARK: - Keyboard selection (visual mode)
 
+    // Visual mode works in reading positions: the page's own character indices, except on
+    // two-column pages whose text runs across the columns (see ReadingOrder).
+
+    private func reading(_ page: Int) -> ReadingOrder? {
+        if let cached = readingOrders[page] { return cached }
+        let order = document?.page(at: page).flatMap { ReadingOrder.make(page: $0) }
+        readingOrders[page] = .some(order)
+        return order
+    }
+
+    /// The PDF selection of reading positions on one page.
+    private func selection(page index: Int, range: NSRange) -> PDFSelection? {
+        guard let page = document?.page(at: index), range.length > 0 else { return nil }
+        guard let order = reading(index) else { return page.selection(for: range) }
+        let parts = order.pdfRanges(range).compactMap { page.selection(for: $0) }
+        guard let first = parts.first else { return nil }
+        parts.dropFirst().forEach { first.add($0) }
+        return first
+    }
+
     private func text(_ page: Int) -> NSString {
         if let cached = pageTexts[page] { return cached }
+        if let order = reading(page) { pageTexts[page] = order.text; return order.text }
         let text = (document?.page(at: page)?.string ?? "") as NSString
         pageTexts[page] = text
         return text
@@ -1257,6 +1280,11 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// Lines in reading order, as PDFKit groups them for selection.
     private func lines(_ pageIndex: Int) -> [VisualLine] {
         if let cached = pageLines[pageIndex] { return cached }
+        if let order = reading(pageIndex) {
+            let result = order.lines.map { VisualLine(rect: $0.rect, start: $0.start, end: $0.end) }
+            pageLines[pageIndex] = result
+            return result
+        }
         var result: [VisualLine] = []
         if let page = document?.page(at: pageIndex), let all = page.selection(for: page.bounds(for: .cropBox)) {
             for line in all.selectionsByLine() {
@@ -1302,8 +1330,12 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         guard selection.numberOfTextRanges(on: first) > 0, n > 0 else { return nil }
         let a = selection.range(at: 0, on: first), b = selection.range(at: n - 1, on: last)
         guard a.location != NSNotFound, b.location != NSNotFound else { return nil }
-        return (TextPos(page: doc.index(for: first), index: a.location),
-                TextPos(page: doc.index(for: last), index: b.location + max(b.length, 1) - 1))
+        let (p, q) = (doc.index(for: first), doc.index(for: last))
+        var (start, end) = (a.location, b.location + max(b.length, 1) - 1)
+        if let order = reading(p), start < order.fromPDF.count { start = order.fromPDF[start] }
+        if let order = reading(q), end < order.fromPDF.count { end = order.fromPDF[end] }
+        if p == q, end < start { swap(&start, &end) }
+        return (TextPos(page: p, index: start), TextPos(page: q, index: end))
     }
 
     private func showHints(linewise: Bool) {
@@ -1743,11 +1775,31 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return true
     }
 
+    /// The visual-mode selection's text, in reading order.
+    private var visualText: String? {
+        guard let (anchor, head) = visual else { return nil }
+        let (a, b) = (anchor.page, anchor.index) <= (head.page, head.index) ? (anchor, head) : (head, anchor)
+        guard (a.page...b.page).contains(where: { reading($0) != nil }) else { return nil }   // PDFKit's text is fine
+        var out = ""
+        for p in a.page...b.page {
+            let s = text(p)
+            let from = p == a.page ? a.index : 0, to = min(p == b.page ? b.index : s.length - 1, s.length - 1)
+            if to >= from { out += s.substring(with: NSRange(location: from, length: to - from + 1)) }
+        }
+        let joined = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
     private func showVisual() {
         guard let (anchor, head) = visual, let doc = document else { return }
         let (a, b) = (anchor.page, anchor.index) <= (head.page, head.index) ? (anchor, head) : (head, anchor)
-        guard let pa = doc.page(at: a.page), let pb = doc.page(at: b.page),
-              let selection = doc.selection(from: pa, atCharacterIndex: a.index, to: pb, atCharacterIndex: b.index) else { return }
+        let selection = PDFSelection(document: doc)
+        for p in a.page...b.page {
+            let from = p == a.page ? a.index : 0, to = p == b.page ? b.index : text(p).length - 1
+            if to >= from, let part = self.selection(page: p, range: NSRange(location: from, length: to - from + 1)) {
+                selection.add(part)
+            }
+        }
         pdfView.setCurrentSelection(selection, animate: false)
         // keep the moving end on screen
         if let page = doc.page(at: head.page) {
@@ -1883,7 +1935,8 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
     /// characterIndex(at:) disagree with the page's text on some PDFs (journal papers, two
     /// columns), so the geometry comes from a selection of the same characters instead.
     private func textRect(_ page: PDFPage, _ range: NSRange) -> NSRect {
-        guard range.length > 0, let r = page.selection(for: range)?.bounds(for: page),
+        guard range.length > 0, let index = document?.index(for: page),
+              let r = selection(page: index, range: range)?.bounds(for: page),
               r.minX.isFinite, r.minY.isFinite else { return .null }
         return r
     }
@@ -2003,6 +2056,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         pageTexts = [:]
         referenceItems = [:]
         pageLines = [:]
+        readingOrders = [:]
         clearHints(); visual = nil
         undoStack = []; redoStack = []; pendingEdits = []
         message("reloaded")

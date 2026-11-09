@@ -23,6 +23,7 @@ enum SelfTest {
         labels()
         notes()
         references()
+        readingOrder()
         print(failures == 0 ? "ok: \(checks) checks passed" : "\(failures) of \(checks) checks failed")
         return failures == 0 ? 0 : 1
     }
@@ -129,6 +130,43 @@ enum SelfTest {
     }
 
     // MARK: Reference finder
+
+    /// Two columns whose text alternates left line, right line (as in some scanned PDFs).
+    private static func readingOrder() {
+        func page(interleaved: Bool, merged: Bool = false) -> (NSString, [CGRect]) {
+            var text = "", rects: [CGRect] = []
+            func add(_ line: String, x: CGFloat, y: CGFloat, newline: Bool = true) {
+                for (k, c) in line.enumerated() { text.append(c); rects.append(CGRect(x: x + CGFloat(k) * 5, y: y, width: 5, height: 10)) }
+                if newline { text.append("\n"); rects.append(CGRect(x: x + CGFloat(line.count) * 5, y: y, width: 5, height: 10)) }
+            }
+            let left = (0..<12).map { "left line number \(String(format: "%02d", $0)) text" }
+            let right = (0..<12).map { "right line number \(String(format: "%02d", $0)) txt" }
+            let y = { (i: Int) in CGFloat(700 - i * 14) }
+            if interleaved {
+                for i in 0..<12 {
+                    add(left[i], x: 50, y: y(i), newline: !(merged && i == 5))
+                    add(right[i], x: 300, y: y(i))
+                }
+            } else {
+                for i in 0..<12 { add(left[i], x: 50, y: y(i)) }
+                for i in 0..<12 { add(right[i], x: 300, y: y(i)) }
+            }
+            return (text as NSString, rects)
+        }
+        let (t, r) = page(interleaved: true, merged: true)
+        guard let order = ReadingOrder.make(text: t, rects: r) else { check(false, "reading order: interleaved columns found"); return }
+        let s = order.text as String
+        let lastLeft = s.range(of: "left line number 11")?.lowerBound, firstRight = s.range(of: "right line number 00")?.lowerBound
+        check(lastLeft != nil && firstRight != nil && lastLeft! < firstRight!, "reading order: left column before right")
+        check(order.lines.count == 24, "reading order: 24 lines (got \(order.lines.count))")
+        check(order.lines.allSatisfy { $0.rect.maxX < 280 || $0.rect.minX > 290 }, "reading order: merged line split at the column")
+        check(order.toPDF.count == order.text.length && order.toPDF.allSatisfy { $0 < t.length }, "reading order: position map")
+        let line3 = order.lines[3]
+        let runs = order.pdfRanges(NSRange(location: line3.start, length: line3.end - line3.start + 1))
+        check(runs.count == 1 && t.substring(with: runs[0]).hasPrefix("left line number 03"), "reading order: maps back to the PDF")
+        let (u, q) = page(interleaved: false)
+        check(ReadingOrder.make(text: u, rects: q) == nil, "reading order: ordered columns left alone")
+    }
 
     private static func references() {
         guard let doc = makePDF(pages: [
