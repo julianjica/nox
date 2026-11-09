@@ -1240,6 +1240,24 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         return fresh.dataRepresentation()
     }
 
+    /// Cmd-P: print the PDF in its original colors (dark mode is only for the screen), with its
+    /// highlights and notes.
+    func printPDF() {
+        guard window.attachedSheet == nil, editor == nil else { return }
+        guard let data = dataForSaving(), let copy = PDFDocument(data: data) else {
+            message("could not prepare the PDF for printing", error: true); return
+        }
+        let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo.shared
+        info.jobDisposition = .spool
+        guard let operation = copy.printOperation(for: info, scalingMode: .pageScaleToFit, autoRotate: true) else {
+            message("could not print this PDF", error: true); return
+        }
+        operation.jobTitle = url.deletingPathExtension().lastPathComponent
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
     // MARK: - Undo
 
     /// One change to the PDF's annotations; undo applies it backwards.

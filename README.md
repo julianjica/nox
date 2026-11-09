@@ -135,6 +135,7 @@ View
   s                      two-page spread on / off
   T                      page thumbnails on / off (click one to go there)
   y or Cmd-C             copy the selection
+  Cmd-P                  print (original colors, with highlights and notes)
 
 Presentation
   p                      present from this page: full screen; presenter view on a second display

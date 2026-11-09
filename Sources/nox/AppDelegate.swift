@@ -156,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showKeys() { frontController?.showHelp() }
+    @objc func printFront() { frontController?.printPDF() }
 
     func themeChanged() {
         controllers.forEach { $0.applyTheme() }
@@ -178,6 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Open…", action: #selector(openPanel), keyEquivalent: "o").target = self
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Print…", action: #selector(printFront), keyEquivalent: "p").target = self
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
