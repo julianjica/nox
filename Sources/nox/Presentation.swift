@@ -203,6 +203,9 @@ final class PresentationController: NSObject {
     }
 
     func handle(_ event: NSEvent) {
+        // Backspace / Delete with any modifier (Shift-Backspace too) and Shift-Space: previous slide.
+        if event.keyCode == 51 || event.keyCode == 117 { step(-1); return }
+        if event.keyCode == 49, event.modifierFlags.contains(.shift) { step(-1); return }
         switch event.specialKey {
         case .rightArrow?, .downArrow?, .pageDown?: step(1); return
         case .leftArrow?, .upArrow?, .pageUp?, .delete?, .backspace?: step(-1); return

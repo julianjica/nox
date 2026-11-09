@@ -59,7 +59,7 @@ enum Keymap {
         ]),
         ("Presentation", [
             ("p", "present from this page: full screen; presenter view on a second display"),
-            ("→ Space j / ← k", "next / previous slide (clickers work); click / right-click too"),
+            ("→ Space j / ← ⌫ k", "next / previous slide (Shift-Space, Shift-⌫ too; clickers work); click / right-click too"),
             ("b or .", "blank the screen"),
             ("F8 or ,c", "dark mode on / off for the slides"),
             ("12 ↩", "go to slide 12"),
