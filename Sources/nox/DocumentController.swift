@@ -185,6 +185,9 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
                                                name: .PDFViewPageChanged, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(viewChanged),
                                                name: .PDFViewScaleChanged, object: pdfView)
+        pdfView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewResized),
+                                               name: NSView.frameDidChangeNotification, object: pdfView)
         NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged),
                                                name: .PDFViewSelectionChanged, object: pdfView)
     }
@@ -517,7 +520,8 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         case "gT": switchTab(by: -times)
         case "+", "=": zoom(by: 1.1)
         case "-": zoom(by: 1 / 1.1)
-        case "w": pdfView.autoScales = true
+        case "w": fitWidth()
+        case "W": fitTextWidth()
         case "/": beginInput(.search)
         case ":": beginInput(.page)
         case "n": stepSearch(by: times)
@@ -613,9 +617,93 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         if let page = doc.page(at: index) { pdfView.go(to: page) }
     }
 
+    /// `W` keeps the text fitted when the window changes size.
+    private var fitsText = false
+    private var refit: DispatchWorkItem?
+    private var textExtents: [Int: (minX: CGFloat, maxX: CGFloat)?] = [:]
+
+    /// `w`: the page's width fills the window (kept as the window changes).
+    private func fitWidth() {
+        let top = topDestination
+        fitsText = false
+        pdfView.autoScales = true
+        if let top { pdfView.go(to: top) }
+        message("fit width")
+    }
+
+    /// Where a page's text starts and ends horizontally (most lines; stray marks and margin text left out).
+    private func textExtent(_ index: Int) -> (minX: CGFloat, maxX: CGFloat)? {
+        if let cached = textExtents[index] { return cached }
+        var result: (minX: CGFloat, maxX: CGFloat)?
+        if let page = document?.page(at: index), let all = page.selection(for: page.bounds(for: .cropBox)) {
+            let rects = all.selectionsByLine().map { $0.bounds(for: page) }
+                .filter { $0.width >= 30 && $0.minX.isFinite && $0.maxX.isFinite }
+            if rects.count >= 3 {
+                let lefts = rects.map(\.minX).sorted(), rights = rects.map(\.maxX).sorted()
+                let cut = rects.count / 40   // ignore the most extreme 2.5% on each side
+                result = (lefts[cut], rights[rights.count - 1 - cut])
+            }
+        }
+        textExtents[index] = .some(result)
+        return result
+    }
+
+    /// `W`: the text (margins left out) fills the window's width; with a spread, both pages' text.
+    private func fitTextWidth(saying: Bool = true) {
+        guard let doc = document, let clip = scrollView?.contentView, let docView = pdfView.documentView else { return }
+        let top = topDestination
+        guard let topPage = top?.page else { return }
+        // the pages side by side with the top one (one, or two in a spread)
+        let topRect = pdfView.convert(topPage.bounds(for: pdfView.displayBox), from: topPage)
+        let row = pdfView.visiblePages.filter {
+            let r = pdfView.convert($0.bounds(for: pdfView.displayBox), from: $0)
+            return r.maxY > topRect.minY + 1 && r.minY < topRect.maxY - 1
+        }
+        let pages = row.isEmpty ? [topPage] : row
+        func extent() -> (CGFloat, CGFloat)? {   // in document view coordinates
+            var lo = CGFloat.infinity, hi = -CGFloat.infinity
+            for page in pages {
+                guard let e = textExtent(doc.index(for: page)) else { continue }
+                let y = page.bounds(for: pdfView.displayBox).midY
+                lo = min(lo, docView.convert(pdfView.convert(NSPoint(x: e.minX, y: y), from: page), from: pdfView).x)
+                hi = max(hi, docView.convert(pdfView.convert(NSPoint(x: e.maxX, y: y), from: page), from: pdfView).x)
+            }
+            return hi > lo ? (lo, hi) : nil
+        }
+        guard extent() != nil else {
+            if saying { message("no text on this page: fit width instead", error: true) }
+            fitWidth(); return
+        }
+        let pad: CGFloat = 14
+        pdfView.autoScales = false
+        for _ in 0..<3 {   // gaps between pages don't scale exactly with the pages: settle in a few steps
+            guard let (lo, hi) = extent(), hi - lo > 1 else { break }
+            let factor = (clip.bounds.width - 2 * pad) / (hi - lo)
+            if abs(factor - 1) < 0.002 { break }
+            pdfView.scaleFactor = max(0.2, min(pdfView.scaleFactor * factor, 8))
+            pdfView.layoutDocumentView()
+        }
+        if let top { pdfView.go(to: top) }
+        if let (lo, _) = extent() {
+            clip.scroll(to: NSPoint(x: max(0, lo - pad), y: clip.bounds.origin.y))
+            scrollView?.reflectScrolledClipView(clip)
+        }
+        fitsText = true
+        if saying { message("fit text width (margins cut; w: whole page width)") }
+    }
+
+    @objc private func viewResized() {
+        guard fitsText else { return }
+        refit?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.fitTextWidth(saying: false) }
+        refit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
     /// Zooms while keeping the top of the window in place.
     private func zoom(by factor: CGFloat) {
         let top = topDestination
+        fitsText = false
         pdfView.autoScales = false
         pdfView.scaleFactor = max(0.2, min(pdfView.scaleFactor * factor, 8))
         if let top { pdfView.go(to: top) }
@@ -1668,6 +1756,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         }
         pdfView.autoScales = true
         if let top { pdfView.go(to: top) }
+        if fitsText { DispatchQueue.main.async { self.fitTextWidth(saying: false) } }
     }
 
     /// `p`: presentation mode from the current page.
@@ -2086,6 +2175,7 @@ final class DocumentController: NSObject, NSWindowDelegate, NSTextFieldDelegate,
         referenceItems = [:]
         pageLines = [:]
         readingOrders = [:]
+        textExtents = [:]
         clearHints(); visual = nil
         undoStack = []; redoStack = []; pendingEdits = []
         message("reloaded")

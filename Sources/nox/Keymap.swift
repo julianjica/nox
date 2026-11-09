@@ -48,7 +48,8 @@ enum Keymap {
             ("click / right-click", "a highlight: its note and actions / menu"),
         ]),
         ("View", [
-            ("+ / - / w", "zoom in / out / fit width"),
+            ("+ / - / w", "zoom in / out / fit the page width to the window"),
+            ("W", "fit the text width to the window (margins cut; stays fitted when the window resizes)"),
             (",c or F8", "dark mode on / off"),
             (",f", "full screen"),
             (",2", "visual mode and two columns: auto / on / off (if a selection runs across the columns)"),
